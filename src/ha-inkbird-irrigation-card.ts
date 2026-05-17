@@ -39,7 +39,6 @@ const ZONE_COLORS = [
 @customElement("ha-inkbird-irrigation-card")
 export class HaInkbirdIrrigationCard extends LitElement {
   @state() private _config!: CardConfig;
-  @state() private _expandedZone: number | null = null;
   private _hass?: HomeAssistant;
 
   static getConfigElement() {
@@ -201,40 +200,37 @@ export class HaInkbirdIrrigationCard extends LitElement {
     const duration = this._zoneDuration(zone);
     const progress = isActive && (elapsed + remaining) > 0 ? (elapsed / (elapsed + remaining)) * 100 : 0;
     const color = this._zoneColor(zone);
-    const expanded = this._expandedZone === zone;
 
     return html`
       <div class="zone ${isActive ? 'zone--active' : ''}" style="--zone-color: ${color}">
-        <div class="zone-main" @click=${() => { this._expandedZone = expanded ? null : zone; }}>
+        <div class="zone-main">
           <div class="zone-indicator ${isActive ? 'pulse' : ''}"></div>
           <div class="zone-info">
             <span class="zone-name">${this._zoneName(zone)}</span>
             ${isActive ? html`
               <span class="zone-status">${remaining} min remaining</span>
-            ` : html`
-              <span class="zone-status idle">${duration} min</span>
-            `}
+            ` : nothing}
           </div>
-          <button class="zone-btn ${isActive ? 'zone-btn--active' : ''}" @click=${(e: Event) => { e.stopPropagation(); this._toggleZone(zone); }}>
-            <ha-icon icon="mdi:${isActive ? 'stop' : 'play'}"></ha-icon>
-          </button>
+          ${isActive ? html`
+            <button class="zone-btn zone-btn--active" @click=${() => this._toggleZone(zone)}>
+              <ha-icon icon="mdi:stop"></ha-icon>
+            </button>
+          ` : html`
+            <div class="zone-controls">
+              <select class="dur-select" @change=${(e: Event) => this._setDuration(zone, parseInt((e.target as HTMLSelectElement).value))}>
+                ${[5, 10, 15, 20, 30, 45, 60, 90, 120].map(d => html`
+                  <option value="${d}" ?selected=${duration === d}>${d} min</option>
+                `)}
+              </select>
+              <button class="zone-start-btn" @click=${() => this._startZone(zone, duration)}>
+                <ha-icon icon="mdi:water"></ha-icon>
+              </button>
+            </div>
+          `}
         </div>
         ${isActive ? html`
           <div class="zone-progress">
             <div class="zone-progress-fill" style="width: ${progress}%"></div>
-          </div>
-        ` : nothing}
-        ${expanded && !isActive ? html`
-          <div class="zone-expand">
-            <span class="expand-label">Duration</span>
-            <div class="duration-btns">
-              ${[5, 10, 15, 20, 30, 45, 60].map(d => html`
-                <button class="dur-btn ${duration === d ? 'dur-btn--selected' : ''}" @click=${() => this._setDuration(zone, d)}>${d}</button>
-              `)}
-            </div>
-            <button class="start-btn" @click=${() => this._startZone(zone, duration)}>
-              <ha-icon icon="mdi:water"></ha-icon> Start ${duration} min
-            </button>
           </div>
         ` : nothing}
       </div>
@@ -321,7 +317,6 @@ export class HaInkbirdIrrigationCard extends LitElement {
       align-items: center;
       gap: 12px;
       padding: 12px;
-      cursor: pointer;
     }
     .zone-indicator {
       width: 10px;
@@ -343,6 +338,35 @@ export class HaInkbirdIrrigationCard extends LitElement {
     .zone-name { font-size: 14px; font-weight: 500; }
     .zone-status { font-size: 12px; color: var(--zone-color); font-weight: 500; }
     .zone-status.idle { color: var(--secondary-text-color); font-weight: 400; }
+    .zone-controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .dur-select {
+      padding: 6px 8px;
+      border: 1px solid var(--divider-color, #e0e0e0);
+      border-radius: 8px;
+      font-size: 13px;
+      background: var(--card-background-color, white);
+      color: var(--primary-text-color);
+      cursor: pointer;
+    }
+    .zone-start-btn {
+      width: 36px;
+      height: 36px;
+      border: none;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      background: var(--zone-color);
+      color: white;
+      --mdc-icon-size: 18px;
+      transition: opacity 200ms;
+    }
+    .zone-start-btn:active { opacity: 0.7; }
     .zone-btn {
       width: 36px;
       height: 36px;
@@ -373,49 +397,6 @@ export class HaInkbirdIrrigationCard extends LitElement {
       transition: width 2s linear;
     }
 
-    /* Expanded zone */
-    .zone-expand {
-      padding: 8px 12px 12px;
-      border-top: 1px solid var(--divider-color, #e8e8e8);
-    }
-    .expand-label { font-size: 11px; color: var(--secondary-text-color); text-transform: uppercase; font-weight: 600; }
-    .duration-btns {
-      display: flex;
-      gap: 4px;
-      margin: 8px 0;
-      flex-wrap: wrap;
-    }
-    .dur-btn {
-      padding: 4px 10px;
-      border: 1px solid var(--divider-color, #e0e0e0);
-      border-radius: 6px;
-      background: transparent;
-      font-size: 12px;
-      cursor: pointer;
-      color: var(--primary-text-color);
-      transition: all 150ms;
-    }
-    .dur-btn--selected {
-      background: var(--zone-color);
-      color: white;
-      border-color: var(--zone-color);
-    }
-    .start-btn {
-      width: 100%;
-      padding: 8px;
-      border: none;
-      border-radius: 8px;
-      background: var(--zone-color);
-      color: white;
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      --mdc-icon-size: 16px;
-    }
   `;
 }
 
