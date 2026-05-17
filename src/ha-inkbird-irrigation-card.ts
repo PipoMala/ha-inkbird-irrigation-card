@@ -29,6 +29,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
   @state() private _loading: Set<string> = new Set();
   @state() private _addingSchedule = false;
   @state() private _editingScheduleId: string | null = null;
+  @state() private _schedulesExpanded = false;
   @state() private _newZone = 1;
   @state() private _newTime = "07:00";
   @state() private _newDuration = 30;
@@ -219,21 +220,26 @@ export class HaInkbirdIrrigationCard extends LitElement {
     const schedules = this._schedules;
     return html`
       <div class="schedule-section">
-        <div class="schedule-header">
-          <span class="schedule-title"><ha-icon icon="mdi:calendar-clock"></ha-icon> Schedules</span>
-          <button class="add-btn" @click=${() => { this._addingSchedule = !this._addingSchedule; this._editingScheduleId = null; }}>${this._addingSchedule ? "Cancel" : "+ Add"}</button>
+        <div class="schedule-header" @click=${() => { this._schedulesExpanded = !this._schedulesExpanded; }}>
+          <span class="schedule-title">
+            <ha-icon icon="mdi:chevron-${this._schedulesExpanded ? 'down' : 'right'}"></ha-icon>
+            Schedules ${schedules.length > 0 ? html`<span class="sched-count">${schedules.length}</span>` : nothing}
+          </span>
+          ${this._schedulesExpanded ? html`<button class="add-btn" @click=${(e: Event) => { e.stopPropagation(); this._addingSchedule = !this._addingSchedule; this._editingScheduleId = null; }}>${this._addingSchedule ? "Cancel" : "+ Add"}</button>` : nothing}
         </div>
-        ${this._addingSchedule ? this._renderAddForm() : nothing}
-        ${schedules.length === 0 && !this._addingSchedule ? html`<div class="empty-schedule">No schedules. Tap + Add to create one.</div>` : nothing}
-        ${schedules.map(s => html`
-          <div class="sched-entry">
-            <button class="sched-toggle ${s.enabled ? 'on' : ''}" @click=${() => this._toggleSchedule(s.entity_id)}><ha-icon icon="mdi:${s.enabled ? 'check-circle' : 'circle-outline'}"></ha-icon></button>
-            <div class="sched-info"><span class="sched-zone" style="color: ${this._zoneColor(s.zone)}">${this._zoneName(s.zone)}</span><span class="sched-detail">${s.time} · ${s.duration}min · ${s.days}</span></div>
-            <button class="sched-action" @click=${() => this._editSchedule(s)}><ha-icon icon="mdi:pencil"></ha-icon></button>
-            <button class="sched-action" @click=${() => this._duplicateSchedule(s)}><ha-icon icon="mdi:content-copy"></ha-icon></button>
-            <button class="sched-remove" @click=${() => this._removeSchedule(s.entity_id)}><ha-icon icon="mdi:delete"></ha-icon></button>
-          </div>
-        `)}
+        ${this._schedulesExpanded ? html`
+          ${this._addingSchedule ? this._renderAddForm() : nothing}
+          ${schedules.length === 0 && !this._addingSchedule ? html`<div class="empty-schedule">No schedules. Tap + Add to create one.</div>` : nothing}
+          ${schedules.map(s => html`
+            <div class="sched-entry">
+              <button class="sched-toggle ${s.enabled ? 'on' : ''}" @click=${() => this._toggleSchedule(s.entity_id)}><ha-icon icon="mdi:${s.enabled ? 'check-circle' : 'circle-outline'}"></ha-icon></button>
+              <div class="sched-info"><span class="sched-zone" style="color: ${this._zoneColor(s.zone)}">${this._zoneName(s.zone)}</span><span class="sched-detail">${s.time} · ${s.duration}min · ${s.days}</span></div>
+              <button class="sched-action" @click=${() => this._editSchedule(s)}><ha-icon icon="mdi:pencil"></ha-icon></button>
+              <button class="sched-action" @click=${() => this._duplicateSchedule(s)}><ha-icon icon="mdi:content-copy"></ha-icon></button>
+              <button class="sched-remove" @click=${() => this._removeSchedule(s.entity_id)}><ha-icon icon="mdi:delete"></ha-icon></button>
+            </div>
+          `)}
+        ` : nothing}
       </div>`;
   }
 
@@ -294,8 +300,9 @@ export class HaInkbirdIrrigationCard extends LitElement {
 
     /* Schedule section */
     .schedule-section { margin-top: 12px; border-top: 1px solid var(--divider-color, #e0e0e0); padding-top: 12px; }
-    .schedule-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-    .schedule-title { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; --mdc-icon-size: 18px; }
+    .schedule-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; cursor: pointer; }
+    .schedule-title { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 4px; --mdc-icon-size: 18px; }
+    .sched-count { font-size: 11px; background: var(--primary-color, #4CAF50); color: white; border-radius: 10px; padding: 1px 6px; font-weight: 500; }
     .add-btn { padding: 4px 12px; border: 1px solid var(--primary-color, #4CAF50); border-radius: 8px; background: transparent; color: var(--primary-color, #4CAF50); font-size: 12px; font-weight: 500; cursor: pointer; }
     .empty-schedule { padding: 12px; text-align: center; color: var(--secondary-text-color); font-size: 13px; font-style: italic; }
     .sched-entry { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; background: var(--primary-background-color, #f5f5f5); margin-bottom: 4px; }
