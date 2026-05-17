@@ -65,7 +65,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
       // Parse alias: "Irr: Zone 5 @ 07:00 (30min) Mon,Wed,Fri"
       const m = name.match(/Irr:\s*Zone\s*(\d+)\s*@\s*(\d{2}:\d{2})\s*\((\d+)min\)\s*(.*)/i);
       if (m) {
-        results.push({ id: eid.replace("automation.", ""), entity_id: eid, name, enabled: entity.state === "on", zone: parseInt(m[1]), time: m[2], duration: parseInt(m[3]), days: m[4].trim() });
+        results.push({ id: entity.attributes?.id || eid, entity_id: eid, name, enabled: entity.state === "on", zone: parseInt(m[1]), time: m[2], duration: parseInt(m[3]), days: m[4].trim() });
       }
     }
     return results.sort((a, b) => a.zone - b.zone || a.time.localeCompare(b.time));
@@ -129,9 +129,11 @@ export class HaInkbirdIrrigationCard extends LitElement {
   }
 
   private async _removeSchedule(entityId: string) {
-    const id = entityId.replace("automation.", "");
+    // The config id is in the entity's attributes, not the entity_id
+    const configId = this._hass?.states[entityId]?.attributes?.id;
+    if (!configId) { console.error("No config id found for", entityId); return; }
     try {
-      await (this._hass as any).callApi("DELETE", `config/automation/config/${id}`);
+      await (this._hass as any).callApi("DELETE", `config/automation/config/${configId}`);
       await this._hass?.callService("automation", "reload", {});
     } catch (e: any) {
       console.error("Failed to delete schedule:", e);
