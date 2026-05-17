@@ -515,6 +515,61 @@ window.customCards.push({
   preview: true,
 });
 
+// ── Editor ──
+
+@customElement("ha-inkbird-irrigation-card-editor")
+export class HaInkbirdIrrigationCardEditor extends LitElement {
+  @state() private _config: any = {};
+  private _hass?: HomeAssistant;
+
+  set hass(hass: HomeAssistant) {
+    this._hass = hass;
+  }
+
+  setConfig(config: any) {
+    this._config = config;
+  }
+
+  private _schema = [
+    { name: "title", selector: { text: {} }, label: "Card Title" },
+    { name: "entity_prefix", selector: { text: {} }, label: "Entity Prefix (e.g. inkbird_iic_600)" },
+    { name: "zone_1_entity", selector: { entity: { domain: "switch" } }, label: "Zone 1 Switch" },
+    { name: "zone_2_entity", selector: { entity: { domain: "switch" } }, label: "Zone 2 Switch" },
+    { name: "zone_3_entity", selector: { entity: { domain: "switch" } }, label: "Zone 3 Switch" },
+    { name: "zone_4_entity", selector: { entity: { domain: "switch" } }, label: "Zone 4 Switch" },
+    { name: "zone_5_entity", selector: { entity: { domain: "switch" } }, label: "Zone 5 Switch" },
+    { name: "zone_6_entity", selector: { entity: { domain: "switch" } }, label: "Zone 6 Switch" },
+  ];
+
+  render() {
+    return html`
+      <ha-form
+        .hass=${this._hass}
+        .data=${this._config}
+        .schema=${this._schema}
+        .computeLabel=${(s: any) => s.label || s.name}
+        @value-changed=${this._handleFormChanged}
+      ></ha-form>
+    `;
+  }
+
+  private _handleFormChanged(ev: CustomEvent) {
+    const config = { ...this._config, ...ev.detail.value };
+    // Derive zones from which zone entities are set
+    const zones: number[] = [];
+    for (let i = 1; i <= 6; i++) {
+      if (config[`zone_${i}_entity`]) {
+        zones.push(i);
+      }
+    }
+    if (zones.length > 0) {
+      config.zones = zones;
+    }
+    this._config = config;
+    this.dispatchEvent(new CustomEvent("config-changed", { detail: { config } }));
+  }
+}
+
 declare global {
   interface Window { customCards?: any[]; }
 }
