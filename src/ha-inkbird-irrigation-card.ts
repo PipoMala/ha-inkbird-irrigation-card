@@ -110,6 +110,14 @@ export class HaInkbirdIrrigationCard extends LitElement {
     return this._hass?.states[`switch.${this._prefix}_skip_schedule`]?.state === "on";
   }
 
+  private get _mainValve(): boolean {
+    return this._hass?.states[`switch.${this._prefix}_main_valve`]?.state === "on";
+  }
+
+  private get _rainSensor(): boolean {
+    return this._hass?.states[`switch.${this._prefix}_rain_sensor`]?.state === "on";
+  }
+
   private get _activeZones(): number[] {
     return this._zones.filter(z => this._zoneIsActive(z));
   }
