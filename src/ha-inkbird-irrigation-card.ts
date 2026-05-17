@@ -17,7 +17,7 @@ interface HomeAssistant {
   callWS(msg: Record<string, any>): Promise<any>;
   themes: { darkMode: boolean };
 }
-interface CardConfig { type: string; entity_prefix?: string; title?: string; zones?: number[]; zone_names?: Record<number, string>; num_zones?: number; }
+interface CardConfig { type: string; entity_prefix?: string; title?: string; zones?: number[]; zone_names?: Record<number, string>; num_zones?: number; zones_columns?: number; }
 
 const ZONE_COLORS = ["#4CAF50", "#2196F3", "#FF9800", "#9C27B0", "#00BCD4", "#F44336"];
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -182,7 +182,9 @@ export class HaInkbirdIrrigationCard extends LitElement {
         </div>
         <div class="card-content">
           ${this._renderSwitches()}
-          ${this._zones.map(z => this._renderZone(z))}
+          <div class="zones-grid" style="--zones-columns: ${this._config.zones_columns || 1}">
+            ${this._zones.map(z => this._renderZone(z))}
+          </div>
           ${this._renderSchedules()}
         </div>
       </ha-card>`;
@@ -260,6 +262,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
     .badge--skip { background: rgba(255, 152, 0, 0.15); color: var(--warning-color, #FF9800); }
     .stop-all-btn { border: none; background: var(--error-color, #f44336); color: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; --mdc-icon-size: 18px; }
     .card-content { padding: 8px 16px 16px; display: flex; flex-direction: column; gap: 6px; }
+    .zones-grid { display: grid; grid-template-columns: repeat(var(--zones-columns, 1), 1fr); gap: 6px; }
     .switches-row { display: flex; gap: 6px; margin-bottom: 8px; }
     .sw-btn { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 8px; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 10px; background: transparent; cursor: pointer; color: var(--secondary-text-color); font-size: 11px; font-weight: 500; --mdc-icon-size: 20px; transition: all 200ms; }
     .sw-btn--on { background: rgba(76, 175, 80, 0.1); border-color: var(--primary-color, #4CAF50); color: var(--primary-color, #4CAF50); }
@@ -270,6 +273,10 @@ export class HaInkbirdIrrigationCard extends LitElement {
     .zone { border-radius: 12px; background: var(--primary-background-color, #f5f5f5); overflow: hidden; transition: all 200ms; }
     .zone--active { background: color-mix(in srgb, var(--zone-color) 8%, var(--card-background-color, white)); box-shadow: inset 3px 0 0 var(--zone-color); }
     .zone-main { display: flex; align-items: center; gap: 12px; padding: 12px; }
+    .zones-grid[style*="--zones-columns: 2"] .zone-main,
+    .zones-grid[style*="--zones-columns: 3"] .zone-main { flex-wrap: wrap; gap: 8px; padding: 10px; }
+    .zones-grid[style*="--zones-columns: 2"] .zone-controls,
+    .zones-grid[style*="--zones-columns: 3"] .zone-controls { width: 100%; justify-content: flex-end; }
     .zone-indicator { width: 10px; height: 10px; border-radius: 50%; background: var(--zone-color); opacity: 0.4; flex-shrink: 0; }
     .zone-indicator.pulse { opacity: 1; animation: pulse-dot 1.5s ease-in-out infinite; }
     @keyframes pulse-dot { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.3); opacity: 0.7; } }
@@ -329,6 +336,7 @@ export class HaInkbirdIrrigationCardEditor extends LitElement {
       { name: "title", selector: { text: {} }, label: "Card Title" },
       { name: "entity_prefix", selector: { text: {} }, label: "Entity Prefix (e.g. inkbird_iic_600)" },
       { name: "num_zones", selector: { number: { min: 1, max: 12, mode: "box" } }, label: "Number of Zones" },
+      { name: "zones_columns", selector: { number: { min: 1, max: 3, mode: "box" } }, label: "Zone Columns (1-3)" },
     ];
     const zoneSchemas: any[] = [];
     for (let i = 1; i <= this._numZones; i++) {
