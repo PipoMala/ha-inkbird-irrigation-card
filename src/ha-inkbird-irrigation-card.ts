@@ -122,9 +122,8 @@ export class HaInkbirdIrrigationCard extends LitElement {
         trigger: [{ platform: "time", at: `${this._newTime}:00` }],
         condition: [{ condition: "time", weekday: selectedDays }],
         action: [
+          { service: "number.set_value", target: { entity_id: `number.${this._prefix}_zone_${this._newZone}_duration` }, data: { value: this._newDuration } },
           { service: "switch.turn_on", target: { entity_id: `switch.${this._prefix}_zone_${this._newZone}` } },
-          { delay: { minutes: this._newDuration } },
-          { service: "switch.turn_off", target: { entity_id: `switch.${this._prefix}_zone_${this._newZone}` } },
         ],
         mode: "single",
       };
