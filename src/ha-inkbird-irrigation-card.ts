@@ -530,43 +530,82 @@ export class HaInkbirdIrrigationCardEditor extends LitElement {
     this._config = config;
   }
 
-  private _schema = [
-    { name: "title", selector: { text: {} }, label: "Card Title" },
-    { name: "entity_prefix", selector: { text: {} }, label: "Entity Prefix (e.g. inkbird_iic_600)" },
-    { name: "zone_1_entity", selector: { entity: { domain: "switch" } }, label: "Zone 1 Switch" },
-    { name: "zone_2_entity", selector: { entity: { domain: "switch" } }, label: "Zone 2 Switch" },
-    { name: "zone_3_entity", selector: { entity: { domain: "switch" } }, label: "Zone 3 Switch" },
-    { name: "zone_4_entity", selector: { entity: { domain: "switch" } }, label: "Zone 4 Switch" },
-    { name: "zone_5_entity", selector: { entity: { domain: "switch" } }, label: "Zone 5 Switch" },
-    { name: "zone_6_entity", selector: { entity: { domain: "switch" } }, label: "Zone 6 Switch" },
-  ];
+  private get _numZones(): number {
+    return this._config.num_zones || 6;
+  }
 
   render() {
+    const baseSchema = [
+      { name: "title", selector: { text: {} }, label: "Card Title" },
+      { name: "entity_prefix", selector: { text: {} }, label: "Entity Prefix (auto-fills zone entities)" },
+      { name: "num_zones", selector: { number: { min: 1, max: 12, mode: "box" } }, label: "Number of Zones" },
+    ];
+
+    // Build zone schemas dynamically based on num_zones
+    const zoneSchemas: any[] = [];
+    for (let i = 1; i <= this._numZones; i++) {
+      zoneSchemas.push(
+        { name: `zone_${i}_name`, selector: { text: {} }, label: `Zone ${i} Name` },
+        { name: `zone_${i}_entity`, selector: { entity: { domain: "switch" } }, label: `Zone ${i} Switch Entity` },
+      );
+    }
+
     return html`
       <ha-form
         .hass=${this._hass}
         .data=${this._config}
-        .schema=${this._schema}
+        .schema=${baseSchema}
         .computeLabel=${(s: any) => s.label || s.name}
-        @value-changed=${this._handleFormChanged}
+        @value-changed=${this._handleBaseChanged}
       ></ha-form>
+      ${this._numZones > 0 ? html`
+        <h3 style="margin: 16px 0 8px; font-size: 14px;">Zone Configuration</h3>
+        <ha-form
+          .hass=${this._hass}
+          .data=${this._config}
+          .schema=${zoneSchemas}
+          .computeLabel=${(s: any) => s.label || s.name}
+          @value-changed=${this._handleZoneChanged}
+        ></ha-form>
+      ` : nothing}
     `;
   }
 
-  private _handleFormChanged(ev: CustomEvent) {
-    const config = { ...this._config, ...ev.detail.value };
-    // Derive zones from which zone entities are set
-    const zones: number[] = [];
-    for (let i = 1; i <= 6; i++) {
-      if (config[`zone_${i}_entity`]) {
-        zones.push(i);
+  private _handleBaseChanged(ev: CustomEvent) {
+    const newData = { ...this._config, ...ev.detail.value };
+    // If prefix changed, auto-derive zone entities
+    if (newData.entity_prefix && newData.entity_prefix !== this._config.entity_prefix) {
+      const n = newData.num_zones || 6;
+      for (let i = 1; i <= n; i++) {
+        if (!newData[`zone_${i}_entity`]) {
+          newData[`zone_${i}_entity`] = `switch.${newData.entity_prefix}_zone_${i}`;
+        }
       }
     }
-    if (zones.length > 0) {
-      config.zones = zones;
+    // Build zones array from num_zones
+    const zones: number[] = [];
+    const n = newData.num_zones || 6;
+    for (let i = 1; i <= n; i++) zones.push(i);
+    newData.zones = zones;
+
+    this._config = newData;
+    this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: newData } }));
+  }
+
+  private _handleZoneChanged(ev: CustomEvent) {
+    const newData = { ...this._config, ...ev.detail.value };
+    // Build zone_names from zone_X_name fields
+    const zoneNames: Record<number, string> = {};
+    for (let i = 1; i <= (newData.num_zones || 6); i++) {
+      if (newData[`zone_${i}_name`]) {
+        zoneNames[i] = newData[`zone_${i}_name`];
+      }
     }
-    this._config = config;
-    this.dispatchEvent(new CustomEvent("config-changed", { detail: { config } }));
+    if (Object.keys(zoneNames).length > 0) {
+      newData.zone_names = zoneNames;
+    }
+    this._config = newData;
+    this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: newData } }));
   }
 }
 
