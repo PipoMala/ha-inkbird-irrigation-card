@@ -186,8 +186,13 @@ export class HaInkbirdIrrigationCard extends LitElement {
     try {
       const isOn = this._hass?.states[entityId]?.state === "on";
       await this._hass?.callService("switch", isOn ? "turn_off" : "turn_on", { entity_id: entityId });
-      await new Promise(r => setTimeout(r, 500));
+      // Wait for device to process, then refresh all switches including the one pressed
+      await new Promise(r => setTimeout(r, 1000));
       await this._hass?.callService("homeassistant", "update_entity", { entity_id: entityId });
+      await this._hass?.callService("homeassistant", "update_entity", { entity_id: `switch.${this._prefix}_main_valve` });
+      await this._hass?.callService("homeassistant", "update_entity", { entity_id: `switch.${this._prefix}_rain_sensor` });
+      // Extra wait to let state propagate before removing spinner
+      await new Promise(r => setTimeout(r, 500));
     } finally {
       this._loading = new Set([...this._loading].filter(k => k !== key));
     }
@@ -247,10 +252,12 @@ export class HaInkbirdIrrigationCard extends LitElement {
           ${this._loading.has(`sw_switch.${this._prefix}_rain_sensor`) ? html`<ha-icon icon="mdi:loading" class="spin"></ha-icon>` : html`<ha-icon icon="mdi:weather-rainy"></ha-icon>`}
           <span>Rain</span>
         </button>
-        <button class="sw-btn ${skipSchedule ? 'sw-btn--warn' : ''} ${this._loading.has(`sw_switch.${this._prefix}_skip_schedule`) ? 'sw-btn--loading' : ''}" @click=${() => this._toggleSwitch(`switch.${this._prefix}_skip_schedule`)}>
-          ${this._loading.has(`sw_switch.${this._prefix}_skip_schedule`) ? html`<ha-icon icon="mdi:loading" class="spin"></ha-icon>` : html`<ha-icon icon="mdi:calendar-remove"></ha-icon>`}
-          <span>Skip</span>
-        </button>
+        ${skipSchedule ? html`
+          <div class="sw-btn sw-btn--warn">
+            <ha-icon icon="mdi:calendar-remove"></ha-icon>
+            <span>Skipped</span>
+          </div>
+        ` : nothing}
       </div>
     `;
   }
