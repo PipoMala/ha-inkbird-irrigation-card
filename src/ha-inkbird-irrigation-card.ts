@@ -2,7 +2,6 @@
  * HA Inkbird Irrigation Card
  *
  * A custom Lovelace card for managing the Inkbird IIC-600 irrigation controller.
- * Shows zone status with progress, start/stop controls, and duration adjustment.
  */
 
 import { LitElement, html, css, nothing } from "lit";
@@ -25,11 +24,22 @@ interface CardConfig {
   entity_prefix?: string;
   title?: string;
   zones?: number[];
+  zone_names?: Record<number, string>;
 }
+
+const ZONE_COLORS = [
+  "#4CAF50", // green
+  "#2196F3", // blue
+  "#FF9800", // orange
+  "#9C27B0", // purple
+  "#00BCD4", // cyan
+  "#F44336", // red
+];
 
 @customElement("ha-inkbird-irrigation-card")
 export class HaInkbirdIrrigationCard extends LitElement {
   @state() private _config!: CardConfig;
+  @state() private _expandedZone: number | null = null;
   private _hass?: HomeAssistant;
 
   static getConfigElement() {
@@ -61,6 +71,15 @@ export class HaInkbirdIrrigationCard extends LitElement {
     return this._config.zones || [1, 2, 3, 4, 5, 6];
   }
 
+  private _zoneName(zone: number): string {
+    return this._config.zone_names?.[zone] || `Zone ${zone}`;
+  }
+
+  private _zoneColor(zone: number): string {
+    const idx = this._zones.indexOf(zone);
+    return ZONE_COLORS[idx % ZONE_COLORS.length];
+  }
+
   private _zoneSwitch(zone: number): HassEntity | undefined {
     return this._hass?.states[`switch.${this._prefix}_zone_${zone}`];
   }
@@ -88,20 +107,12 @@ export class HaInkbirdIrrigationCard extends LitElement {
     return this._hass?.states[`sensor.${this._prefix}_mode`]?.state || "auto";
   }
 
-  private get _mainValve(): boolean {
-    return this._hass?.states[`switch.${this._prefix}_main_valve`]?.state === "on";
-  }
-
-  private get _rainSensor(): boolean {
-    return this._hass?.states[`switch.${this._prefix}_rain_sensor`]?.state === "on";
-  }
-
   private get _skipSchedule(): boolean {
     return this._hass?.states[`switch.${this._prefix}_skip_schedule`]?.state === "on";
   }
 
-  private get _anyZoneActive(): boolean {
-    return this._zones.some(z => this._zoneIsActive(z));
+  private get _activeZones(): number[] {
+    return this._zones.filter(z => this._zoneIsActive(z));
   }
 
   // ── Actions ──
@@ -110,6 +121,16 @@ export class HaInkbirdIrrigationCard extends LitElement {
     const isOn = this._zoneIsActive(zone);
     const entityId = `switch.${this._prefix}_zone_${zone}`;
     await this._hass?.callService("switch", isOn ? "turn_off" : "turn_on", { entity_id: entityId });
+  }
+
+  private async _startZone(zone: number, duration: number) {
+    await this._hass?.callService("number", "set_value", {
+      entity_id: `number.${this._prefix}_zone_${zone}_duration`,
+      value: duration,
+    });
+    await this._hass?.callService("switch", "turn_on", {
+      entity_id: `switch.${this._prefix}_zone_${zone}`,
+    });
   }
 
   private async _stopAll() {
@@ -134,43 +155,29 @@ export class HaInkbirdIrrigationCard extends LitElement {
   render() {
     if (!this._config || !this._hass) return nothing;
 
+    const activeZones = this._activeZones;
+
     return html`
-      <ha-card .header=${this._config.title || "Irrigation"}>
+      <ha-card>
+        <div class="card-header">
+          <div class="header-left">
+            <ha-icon icon="mdi:sprinkler-variant" class="${activeZones.length > 0 ? 'watering' : ''}"></ha-icon>
+            <span class="title">${this._config.title || "Irrigation"}</span>
+          </div>
+          <div class="header-right">
+            ${this._skipSchedule ? html`<span class="badge badge--skip">Skipped</span>` : nothing}
+            <span class="badge badge--mode">${this._mode}</span>
+            ${activeZones.length > 0 ? html`
+              <button class="stop-all-btn" @click=${this._stopAll}>
+                <ha-icon icon="mdi:stop-circle"></ha-icon>
+              </button>
+            ` : nothing}
+          </div>
+        </div>
         <div class="card-content">
-          ${this._renderStatus()}
-          ${this._renderZones()}
+          ${this._zones.map(zone => this._renderZone(zone))}
         </div>
       </ha-card>
-    `;
-  }
-
-  private _renderStatus() {
-    const mode = this._mode;
-    const anyActive = this._anyZoneActive;
-    const skipSchedule = this._skipSchedule;
-
-    return html`
-      <div class="status-section">
-        <div class="status-row">
-          <ha-icon icon="mdi:sprinkler-variant"></ha-icon>
-          <span class="status-text">${anyActive ? "Watering" : "Idle"}</span>
-          <span class="status-mode">${mode}</span>
-          ${skipSchedule ? html`<span class="status-skip"><ha-icon icon="mdi:calendar-remove"></ha-icon></span>` : nothing}
-          ${anyActive ? html`
-            <button class="stop-all-btn" @click=${this._stopAll}>
-              <ha-icon icon="mdi:stop"></ha-icon> Stop All
-            </button>
-          ` : nothing}
-        </div>
-      </div>
-    `;
-  }
-
-  private _renderZones() {
-    return html`
-      <div class="zones-section">
-        ${this._zones.map(zone => this._renderZone(zone))}
-      </div>
     `;
   }
 
@@ -179,24 +186,42 @@ export class HaInkbirdIrrigationCard extends LitElement {
     const remaining = this._zoneRemaining(zone);
     const elapsed = this._zoneElapsed(zone);
     const duration = this._zoneDuration(zone);
-    const progress = isActive && duration > 0 ? Math.min((elapsed / duration) * 100, 100) : 0;
+    const progress = isActive && (elapsed + remaining) > 0 ? (elapsed / (elapsed + remaining)) * 100 : 0;
+    const color = this._zoneColor(zone);
+    const expanded = this._expandedZone === zone;
 
     return html`
-      <div class="zone-row ${isActive ? 'active' : ''}">
-        <div class="zone-header">
-          <button class="zone-toggle ${isActive ? 'on' : ''}" @click=${() => this._toggleZone(zone)}>
-            <ha-icon icon="mdi:${isActive ? 'water' : 'water-off'}"></ha-icon>
+      <div class="zone ${isActive ? 'zone--active' : ''}" style="--zone-color: ${color}">
+        <div class="zone-main" @click=${() => { this._expandedZone = expanded ? null : zone; }}>
+          <div class="zone-indicator ${isActive ? 'pulse' : ''}"></div>
+          <div class="zone-info">
+            <span class="zone-name">${this._zoneName(zone)}</span>
+            ${isActive ? html`
+              <span class="zone-status">${remaining} min remaining</span>
+            ` : html`
+              <span class="zone-status idle">${duration} min</span>
+            `}
+          </div>
+          <button class="zone-btn ${isActive ? 'zone-btn--active' : ''}" @click=${(e: Event) => { e.stopPropagation(); this._toggleZone(zone); }}>
+            <ha-icon icon="mdi:${isActive ? 'stop' : 'play'}"></ha-icon>
           </button>
-          <span class="zone-name">Zone ${zone}</span>
-          ${isActive ? html`
-            <span class="zone-time">${remaining} min left</span>
-          ` : html`
-            <span class="zone-duration">${duration} min</span>
-          `}
         </div>
         ${isActive ? html`
           <div class="zone-progress">
-            <div class="zone-progress-bar" style="width: ${progress}%"></div>
+            <div class="zone-progress-fill" style="width: ${progress}%"></div>
+          </div>
+        ` : nothing}
+        ${expanded && !isActive ? html`
+          <div class="zone-expand">
+            <span class="expand-label">Duration</span>
+            <div class="duration-btns">
+              ${[5, 10, 15, 20, 30, 45, 60].map(d => html`
+                <button class="dur-btn ${duration === d ? 'dur-btn--selected' : ''}" @click=${() => this._setDuration(zone, d)}>${d}</button>
+              `)}
+            </div>
+            <button class="start-btn" @click=${() => this._startZone(zone, duration)}>
+              <ha-icon icon="mdi:water"></ha-icon> Start ${duration} min
+            </button>
           </div>
         ` : nothing}
       </div>
@@ -205,61 +230,107 @@ export class HaInkbirdIrrigationCard extends LitElement {
 
   static styles = css`
     :host { display: block; }
-    .card-content { padding: 16px; }
 
-    /* Status */
-    .status-section { margin-bottom: 16px; }
-    .status-row {
+    /* Header */
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 16px 8px;
+    }
+    .header-left {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 12px;
-      border-radius: 12px;
-      background: var(--primary-background-color, #f5f5f5);
     }
-    .status-text { font-size: 16px; font-weight: 500; flex: 1; }
-    .status-mode {
-      font-size: 12px;
-      text-transform: uppercase;
+    .header-left ha-icon {
+      --mdc-icon-size: 24px;
+      color: var(--primary-color);
+    }
+    .header-left ha-icon.watering {
+      animation: pulse-icon 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse-icon {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .title { font-size: 18px; font-weight: 600; }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .badge {
+      font-size: 11px;
+      font-weight: 500;
       padding: 2px 8px;
       border-radius: 4px;
+      text-transform: uppercase;
+    }
+    .badge--mode {
       background: var(--secondary-background-color, #e0e0e0);
       color: var(--secondary-text-color);
     }
-    .status-skip { color: var(--warning-color, #FF9800); --mdc-icon-size: 18px; }
+    .badge--skip {
+      background: rgba(255, 152, 0, 0.15);
+      color: var(--warning-color, #FF9800);
+    }
     .stop-all-btn {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      padding: 6px 12px;
       border: none;
-      border-radius: 8px;
       background: var(--error-color, #f44336);
       color: white;
-      font-size: 12px;
-      font-weight: 500;
-      cursor: pointer;
-      --mdc-icon-size: 16px;
-    }
-
-    /* Zones */
-    .zones-section { display: flex; flex-direction: column; gap: 8px; }
-    .zone-row {
-      padding: 10px 12px;
-      border-radius: 10px;
-      background: var(--primary-background-color, #f5f5f5);
-      transition: background 200ms;
-    }
-    .zone-row.active {
-      background: rgba(33, 150, 243, 0.08);
-      border: 1px solid rgba(33, 150, 243, 0.3);
-    }
-    .zone-header {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
       display: flex;
       align-items: center;
-      gap: 10px;
+      justify-content: center;
+      cursor: pointer;
+      --mdc-icon-size: 18px;
     }
-    .zone-toggle {
+
+    /* Content */
+    .card-content { padding: 8px 16px 16px; display: flex; flex-direction: column; gap: 6px; }
+
+    /* Zone */
+    .zone {
+      border-radius: 12px;
+      background: var(--primary-background-color, #f5f5f5);
+      overflow: hidden;
+      transition: all 200ms;
+    }
+    .zone--active {
+      background: color-mix(in srgb, var(--zone-color) 8%, var(--card-background-color, white));
+      box-shadow: inset 3px 0 0 var(--zone-color);
+    }
+    .zone-main {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px;
+      cursor: pointer;
+    }
+    .zone-indicator {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--zone-color);
+      opacity: 0.4;
+      flex-shrink: 0;
+    }
+    .zone-indicator.pulse {
+      opacity: 1;
+      animation: pulse-dot 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse-dot {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.3); opacity: 0.7; }
+    }
+    .zone-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+    .zone-name { font-size: 14px; font-weight: 500; }
+    .zone-status { font-size: 12px; color: var(--zone-color); font-weight: 500; }
+    .zone-status.idle { color: var(--secondary-text-color); font-weight: 400; }
+    .zone-btn {
       width: 36px;
       height: 36px;
       border: none;
@@ -269,31 +340,68 @@ export class HaInkbirdIrrigationCard extends LitElement {
       justify-content: center;
       cursor: pointer;
       background: var(--secondary-background-color, #e0e0e0);
-      color: var(--secondary-text-color);
-      --mdc-icon-size: 20px;
+      color: var(--primary-text-color);
+      --mdc-icon-size: 18px;
       transition: all 200ms;
     }
-    .zone-toggle.on {
-      background: var(--info-color, #2196F3);
+    .zone-btn--active {
+      background: var(--zone-color);
       color: white;
     }
-    .zone-name { font-size: 14px; font-weight: 500; flex: 1; }
-    .zone-time { font-size: 13px; color: var(--info-color, #2196F3); font-weight: 500; }
-    .zone-duration { font-size: 13px; color: var(--secondary-text-color); }
 
     /* Progress */
     .zone-progress {
-      margin-top: 8px;
-      height: 4px;
-      border-radius: 2px;
-      background: rgba(33, 150, 243, 0.15);
-      overflow: hidden;
+      height: 3px;
+      background: rgba(0, 0, 0, 0.06);
     }
-    .zone-progress-bar {
+    .zone-progress-fill {
       height: 100%;
-      border-radius: 2px;
-      background: var(--info-color, #2196F3);
-      transition: width 1s linear;
+      background: var(--zone-color);
+      transition: width 2s linear;
+    }
+
+    /* Expanded zone */
+    .zone-expand {
+      padding: 8px 12px 12px;
+      border-top: 1px solid var(--divider-color, #e8e8e8);
+    }
+    .expand-label { font-size: 11px; color: var(--secondary-text-color); text-transform: uppercase; font-weight: 600; }
+    .duration-btns {
+      display: flex;
+      gap: 4px;
+      margin: 8px 0;
+      flex-wrap: wrap;
+    }
+    .dur-btn {
+      padding: 4px 10px;
+      border: 1px solid var(--divider-color, #e0e0e0);
+      border-radius: 6px;
+      background: transparent;
+      font-size: 12px;
+      cursor: pointer;
+      color: var(--primary-text-color);
+      transition: all 150ms;
+    }
+    .dur-btn--selected {
+      background: var(--zone-color);
+      color: white;
+      border-color: var(--zone-color);
+    }
+    .start-btn {
+      width: 100%;
+      padding: 8px;
+      border: none;
+      border-radius: 8px;
+      background: var(--zone-color);
+      color: white;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      --mdc-icon-size: 16px;
     }
   `;
 }
