@@ -1,5 +1,9 @@
 # Inkbird Irrigation Card
 
+[![GitHub Release](https://img.shields.io/github/release/ac-uy/ha-inkbird-irrigation-card.svg?style=flat-square)](https://github.com/ac-uy/ha-inkbird-irrigation-card/releases)
+[![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg?style=flat-square)](https://hacs.xyz/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
+
 A custom Home Assistant Lovelace card for managing the Inkbird IIC-600 WiFi irrigation controller. Shows zone status with progress bars, start/stop controls, and duration display — all in one card.
 
 ## Features
@@ -61,3 +65,9 @@ npm run build
 ## License
 
 MIT
+
+## Support
+
+If you find this useful, consider buying me a coffee ☕ or some tokens 🤖:
+
+[![PayPal](https://img.shields.io/badge/PayPal-Donate-blue.svg?style=flat-square&logo=paypal)](https://paypal.me/AndresCastro965?locale.x=es_ES&country.x=ES)
