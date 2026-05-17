@@ -110,7 +110,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
       const config = {
         id,
         alias,
-        description: "Managed by Inkbird Irrigation Card. Do not rename.",
+        description: "Managed by Inkbird Irrigation Card.",
         trigger: [{ platform: "time", at: `${this._newTime}:00` }],
         condition: [{ condition: "time", weekday: selectedDays }],
         action: [
@@ -120,21 +120,22 @@ export class HaInkbirdIrrigationCard extends LitElement {
         ],
         mode: "single",
       };
-      await this._hass?.callWS({ type: "automation/config", ...config });
+      await (this._hass as any).callApi("POST", `config/automation/config/${id}`, config);
       this._addingSchedule = false;
-      // Reload automations to pick up the new one
       await this._hass?.callService("automation", "reload", {});
-    } catch (e) {
-      console.error("Failed to create schedule automation:", e);
+    } catch (e: any) {
+      console.error("Failed to create schedule:", e);
     } finally { this._saving = false; }
   }
 
   private async _removeSchedule(entityId: string) {
     const id = entityId.replace("automation.", "");
     try {
-      await this._hass?.callWS({ type: "automation/delete", id });
+      await (this._hass as any).callApi("DELETE", `config/automation/config/${id}`);
       await this._hass?.callService("automation", "reload", {});
-    } catch (e) { console.error("Failed to delete schedule:", e); }
+    } catch (e: any) {
+      console.error("Failed to delete schedule:", e);
+    }
   }
 
   // ── Render ──
