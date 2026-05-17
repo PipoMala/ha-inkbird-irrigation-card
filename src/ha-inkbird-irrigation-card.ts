@@ -118,7 +118,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
   // ── Actions ──
 
   private async _refreshEntity() {
-    await new Promise(r => setTimeout(r, 1500));
+    await new Promise(r => setTimeout(r, 500));
     // Refresh all zone switches to get updated state
     for (const zone of this._zones) {
       await this._hass?.callService("homeassistant", "update_entity", {
