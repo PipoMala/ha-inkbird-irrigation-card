@@ -117,10 +117,21 @@ export class HaInkbirdIrrigationCard extends LitElement {
 
   // ── Actions ──
 
+  private async _refreshEntity() {
+    await new Promise(r => setTimeout(r, 1500));
+    // Refresh all zone switches to get updated state
+    for (const zone of this._zones) {
+      await this._hass?.callService("homeassistant", "update_entity", {
+        entity_id: `switch.${this._prefix}_zone_${zone}`,
+      });
+    }
+  }
+
   private async _toggleZone(zone: number) {
     const isOn = this._zoneIsActive(zone);
     const entityId = `switch.${this._prefix}_zone_${zone}`;
     await this._hass?.callService("switch", isOn ? "turn_off" : "turn_on", { entity_id: entityId });
+    await this._refreshEntity();
   }
 
   private async _startZone(zone: number, duration: number) {
@@ -131,6 +142,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
     await this._hass?.callService("switch", "turn_on", {
       entity_id: `switch.${this._prefix}_zone_${zone}`,
     });
+    await this._refreshEntity();
   }
 
   private async _stopAll() {
@@ -141,6 +153,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
         });
       }
     }
+    await this._refreshEntity();
   }
 
   private async _setDuration(zone: number, value: number) {
