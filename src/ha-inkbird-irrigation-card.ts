@@ -166,6 +166,9 @@ export class HaInkbirdIrrigationCard extends LitElement {
   private async _toggleSwitch(entityId: string) {
     const isOn = this._hass?.states[entityId]?.state === "on";
     await this._hass?.callService("switch", isOn ? "turn_off" : "turn_on", { entity_id: entityId });
+    // Force refresh after a short delay
+    await new Promise(r => setTimeout(r, 500));
+    await this._hass?.callService("homeassistant", "update_entity", { entity_id: entityId });
   }
 
   private async _setDuration(zone: number, value: number) {
