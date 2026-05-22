@@ -55,6 +55,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
   private get _rainSensor(): boolean { return this._hass?.states[`switch.${this._prefix}_rain_sensor`]?.state === "on"; }
   private get _skipSchedule(): boolean { return this._hass?.states[`switch.${this._prefix}_skip_schedule`]?.state === "on"; }
   private get _mode(): string { return this._hass?.states[`sensor.${this._prefix}_mode`]?.state || "auto"; }
+  private get _connectionMode(): string { return this._hass?.states[`sensor.${this._prefix}_connection_mode`]?.state || "local"; }
   private get _activeZones(): number[] { return this._zones.filter(z => this._zoneIsActive(z)); }
 
   // ── Schedules: find automations created by this card ──
@@ -177,6 +178,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
           <div class="header-left"><ha-icon icon="mdi:sprinkler-variant" class="${activeZones.length > 0 ? 'watering' : ''}"></ha-icon><span class="title">${this._config.title || "Irrigation"}</span></div>
           <div class="header-right">
             ${this._skipSchedule ? html`<span class="badge badge--skip">Skipped</span>` : nothing}
+            ${this._connectionMode === "cloud" ? html`<span class="badge badge--cloud"><ha-icon icon="mdi:cloud"></ha-icon> Cloud</span>` : html`<span class="badge badge--local"><ha-icon icon="mdi:lan"></ha-icon> Local</span>`}
             <span class="badge badge--mode">${this._mode}</span>
             ${activeZones.length > 0 ? html`<button class="stop-all-btn" @click=${this._stopAll}><ha-icon icon="mdi:stop-circle"></ha-icon></button>` : nothing}
           </div>
@@ -265,6 +267,8 @@ export class HaInkbirdIrrigationCard extends LitElement {
     .header-right { display: flex; align-items: center; gap: 8px; }
     .badge { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 4px; text-transform: uppercase; }
     .badge--mode { background: var(--secondary-background-color, #e0e0e0); color: var(--secondary-text-color); }
+    .badge--cloud { background: rgba(33, 150, 243, 0.15); color: var(--info-color, #2196F3); display: flex; align-items: center; gap: 3px; --mdc-icon-size: 12px; }
+    .badge--local { background: rgba(76, 175, 80, 0.15); color: var(--primary-color, #4CAF50); display: flex; align-items: center; gap: 3px; --mdc-icon-size: 12px; }
     .badge--skip { background: rgba(255, 152, 0, 0.15); color: var(--warning-color, #FF9800); }
     .stop-all-btn { border: none; background: var(--error-color, #f44336); color: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; --mdc-icon-size: 18px; }
     .card-content { padding: 8px 16px 16px; display: flex; flex-direction: column; gap: 6px; }
