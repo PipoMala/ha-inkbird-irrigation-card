@@ -66,17 +66,19 @@ export class HaInkbirdIrrigationCard extends LitElement {
     for (const [eid, entity] of Object.entries(this._hass.states)) {
       if (!eid.startsWith("automation.irr_")) continue;
       const name = entity.attributes?.friendly_name || eid;
-      const desc = entity.attributes?.description || "";
-      // New format: "Irr: 05:00 Mon,Wed,Fri" with JSON zones in description
-      const m = name.match(/Irr:\s*(\d{2}:\d{2})\s+(.*)/i);
+      // New format: "Irr: 05:00 Mon,Wed,Fri [Z1:60,Z2:30]"
+      const m = name.match(/Irr:\s*(\d{2}:\d{2})\s+([A-Za-z,]+)\s*\[([^\]]+)\]/i);
       if (m) {
-        let zones: {zone: number; duration: number}[] = [];
-        try {
-          const jsonMatch = desc.match(/\[.*\]/);
-          if (jsonMatch) zones = JSON.parse(jsonMatch[0]);
-        } catch { /* ignore parse errors */ }
-        results.push({ id: entity.attributes?.id || eid, entity_id: eid, name, enabled: entity.state === "on", time: m[1], days: m[2].trim(), zones });
-        continue;
+        const time = m[1]; const days = m[2].trim();
+        const zones: {zone: number; duration: number}[] = [];
+        for (const part of m[3].split(",")) {
+          const zm = part.trim().match(/Z(\d+):(\d+)/);
+          if (zm) zones.push({ zone: parseInt(zm[1]), duration: parseInt(zm[2]) });
+        }
+        if (zones.length > 0) {
+          results.push({ id: entity.attributes?.id || eid, entity_id: eid, name, enabled: entity.state === "on", time, days, zones });
+          continue;
+        }
       }
       // Legacy format: "Irr: Zone 5 @ 07:00 (30min) Mon,Wed,Fri"
       const legacy = name.match(/Irr:\s*Zone\s*(\d+)\s*@\s*(\d{2}:\d{2})\s*\((\d+)min\)\s*(.*)/i);
@@ -178,7 +180,8 @@ export class HaInkbirdIrrigationCard extends LitElement {
       }
 
       const id = `irr_${this._newTime.replace(":", "")}_${daysKey}_${Date.now()}`;
-      const alias = `Irr: ${this._newTime} ${daysLabel}`;
+      const zonesLabel = zones.map(z => `Z${z.zone}:${z.duration}`).join(",");
+      const alias = `Irr: ${this._newTime} ${daysLabel} [${zonesLabel}]`;
       const zonesJson = JSON.stringify(zones);
       const config = {
         id,
@@ -224,8 +227,8 @@ export class HaInkbirdIrrigationCard extends LitElement {
       const newId = `irr_${sched.time.replace(":", "")}_${daysKey}_${Date.now()}`;
       const config = {
         id: newId,
-        alias: `Irr: ${sched.time} ${sched.days}`,
-        description: `Managed by Inkbird Irrigation Card. Zones: ${JSON.stringify(remainingZones)}`,
+        alias: `Irr: ${sched.time} ${sched.days} [${remainingZones.map(z => `Z${z.zone}:${z.duration}`).join(",")}]`,
+        description: `Managed by Inkbird Irrigation Card.`,
         trigger: [{ platform: "time", at: `${sched.time}:00` }],
         condition: [{ condition: "time", weekday: selectedDays }],
         action: actions,
