@@ -59,19 +59,43 @@ export class HaInkbirdIrrigationCard extends LitElement {
   private get _activeZones(): number[] { return this._zones.filter(z => this._zoneIsActive(z)); }
 
   // ── Schedules: find automations created by this card ──
-  private get _schedules(): { id: string; entity_id: string; name: string; enabled: boolean; zone: number; time: string; days: string; duration: number }[] {
+  // Each automation handles one time+days slot with multiple zones sequenced
+  private get _schedules(): { id: string; entity_id: string; name: string; enabled: boolean; time: string; days: string; zones: {zone: number; duration: number}[] }[] {
     if (!this._hass) return [];
     const results: any[] = [];
     for (const [eid, entity] of Object.entries(this._hass.states)) {
       if (!eid.startsWith("automation.irr_")) continue;
       const name = entity.attributes?.friendly_name || eid;
-      // Parse alias: "Irr: Zone 5 @ 07:00 (30min) Mon,Wed,Fri"
-      const m = name.match(/Irr:\s*Zone\s*(\d+)\s*@\s*(\d{2}:\d{2})\s*\((\d+)min\)\s*(.*)/i);
+      const desc = entity.attributes?.description || "";
+      // New format: "Irr: 05:00 Mon,Wed,Fri" with JSON zones in description
+      const m = name.match(/Irr:\s*(\d{2}:\d{2})\s+(.*)/i);
       if (m) {
-        results.push({ id: entity.attributes?.id || eid, entity_id: eid, name, enabled: entity.state === "on", zone: parseInt(m[1]), time: m[2], duration: parseInt(m[3]), days: m[4].trim() });
+        let zones: {zone: number; duration: number}[] = [];
+        try {
+          const jsonMatch = desc.match(/\[.*\]/);
+          if (jsonMatch) zones = JSON.parse(jsonMatch[0]);
+        } catch { /* ignore parse errors */ }
+        results.push({ id: entity.attributes?.id || eid, entity_id: eid, name, enabled: entity.state === "on", time: m[1], days: m[2].trim(), zones });
+        continue;
+      }
+      // Legacy format: "Irr: Zone 5 @ 07:00 (30min) Mon,Wed,Fri"
+      const legacy = name.match(/Irr:\s*Zone\s*(\d+)\s*@\s*(\d{2}:\d{2})\s*\((\d+)min\)\s*(.*)/i);
+      if (legacy) {
+        results.push({ id: entity.attributes?.id || eid, entity_id: eid, name, enabled: entity.state === "on", time: legacy[2], days: legacy[4].trim(), zones: [{zone: parseInt(legacy[1]), duration: parseInt(legacy[3])}] });
       }
     }
-    return results.sort((a, b) => a.zone - b.zone || a.time.localeCompare(b.time));
+    return results.sort((a, b) => a.time.localeCompare(b.time));
+  }
+
+  // Flat list for display in the card
+  private get _scheduleEntries(): { entity_id: string; zone: number; time: string; days: string; duration: number; enabled: boolean; groupId: string }[] {
+    const entries: any[] = [];
+    for (const sched of this._schedules) {
+      for (const z of sched.zones) {
+        entries.push({ entity_id: sched.entity_id, zone: z.zone, time: sched.time, days: sched.days, duration: z.duration, enabled: sched.enabled, groupId: sched.id });
+      }
+    }
+    return entries.sort((a, b) => a.zone - b.zone || a.time.localeCompare(b.time));
   }
 
   // ── Actions ──
@@ -107,26 +131,62 @@ export class HaInkbirdIrrigationCard extends LitElement {
     if (selectedDays.length === 0) return;
     this._saving = true;
     try {
-      // If editing, delete the old one first
-      if (this._editingScheduleId) {
+      const daysLabel = DAY_NAMES.filter((_, i) => this._newDays[i]).join(",");
+      const daysKey = selectedDays.sort().join("_");
+      
+      // Find existing automation for this time+days combo
+      const existing = this._schedules.find(s => s.time === this._newTime && s.days === daysLabel);
+      
+      // Build zone list
+      let zones: {zone: number; duration: number}[] = [];
+      if (existing) {
+        zones = [...existing.zones];
+        // If editing, remove the old zone entry
+        if (this._editingScheduleId) {
+          // Remove the zone we're editing from this group
+          const editEntry = this._scheduleEntries.find(e => e.entity_id === this._editingScheduleId && e.zone === this._newZone);
+          if (editEntry) {
+            zones = zones.filter(z => z.zone !== editEntry.zone);
+          }
+        }
+        // Remove existing entry for this zone (replace)
+        zones = zones.filter(z => z.zone !== this._newZone);
+      }
+      zones.push({ zone: this._newZone, duration: this._newDuration });
+      zones.sort((a, b) => a.zone - b.zone);
+
+      // Delete old automation if it exists
+      if (existing) {
+        const configId = this._hass?.states[existing.entity_id]?.attributes?.id;
+        if (configId) await (this._hass as any).callApi("DELETE", `config/automation/config/${configId}`);
+      } else if (this._editingScheduleId) {
+        // Editing from a different time/days group — delete from old group
         const configId = this._hass?.states[this._editingScheduleId]?.attributes?.id;
-        if (configId) {
-          await (this._hass as any).callApi("DELETE", `config/automation/config/${configId}`);
+        if (configId) await (this._hass as any).callApi("DELETE", `config/automation/config/${configId}`);
+      }
+
+      // Build sequential action list
+      const actions: any[] = [];
+      for (let i = 0; i < zones.length; i++) {
+        const z = zones[i];
+        actions.push({ service: "number.set_value", target: { entity_id: `number.${this._prefix}_zone_${z.zone}_duration` }, data: { value: z.duration } });
+        actions.push({ service: "switch.turn_on", target: { entity_id: `switch.${this._prefix}_zone_${z.zone}` } });
+        if (i < zones.length - 1) {
+          // Wait for this zone to finish + 1 min buffer before starting next
+          actions.push({ delay: { minutes: z.duration + 1 } });
         }
       }
-      const daysLabel = DAY_NAMES.filter((_, i) => this._newDays[i]).join(",");
-      const id = `irr_zone_${this._newZone}_${this._newTime.replace(":", "")}_${Date.now()}`;
-      const alias = `Irr: Zone ${this._newZone} @ ${this._newTime} (${this._newDuration}min) ${daysLabel}`;
+
+      const id = `irr_${this._newTime.replace(":", "")}_${daysKey}_${Date.now()}`;
+      const alias = `Irr: ${this._newTime} ${daysLabel}`;
+      const zonesJson = JSON.stringify(zones);
       const config = {
         id,
         alias,
-        description: "Managed by Inkbird Irrigation Card.",
+        description: `Managed by Inkbird Irrigation Card. Zones: ${zonesJson}`,
         trigger: [{ platform: "time", at: `${this._newTime}:00` }],
         condition: [{ condition: "time", weekday: selectedDays }],
-        action: [
-          { service: "number.set_value", target: { entity_id: `number.${this._prefix}_zone_${this._newZone}_duration` }, data: { value: this._newDuration } },
-          { service: "switch.turn_on", target: { entity_id: `switch.${this._prefix}_zone_${this._newZone}` } },
-        ],
+        action: actions,
         mode: "single",
       };
       await (this._hass as any).callApi("POST", `config/automation/config/${id}`, config);
@@ -138,16 +198,45 @@ export class HaInkbirdIrrigationCard extends LitElement {
     } finally { this._saving = false; }
   }
 
-  private async _removeSchedule(entityId: string) {
-    // The config id is in the entity's attributes, not the entity_id
+  private async _removeSchedule(entityId: string, zoneToRemove?: number) {
+    const sched = this._schedules.find(s => s.entity_id === entityId);
+    if (!sched) return;
     const configId = this._hass?.states[entityId]?.attributes?.id;
-    if (!configId) { console.error("No config id found for", entityId); return; }
-    try {
+    if (!configId) return;
+
+    if (zoneToRemove !== undefined && sched.zones.length > 1) {
+      // Remove one zone from the group, rebuild the automation
+      const remainingZones = sched.zones.filter(z => z.zone !== zoneToRemove);
       await (this._hass as any).callApi("DELETE", `config/automation/config/${configId}`);
-      await this._hass?.callService("automation", "reload", {});
-    } catch (e: any) {
-      console.error("Failed to delete schedule:", e);
+      
+      // Rebuild with remaining zones
+      const selectedDays = DAY_IDS.filter((_, i) => sched.days.includes(DAY_NAMES[i]));
+      const daysKey = selectedDays.sort().join("_");
+      const actions: any[] = [];
+      for (let i = 0; i < remainingZones.length; i++) {
+        const z = remainingZones[i];
+        actions.push({ service: "number.set_value", target: { entity_id: `number.${this._prefix}_zone_${z.zone}_duration` }, data: { value: z.duration } });
+        actions.push({ service: "switch.turn_on", target: { entity_id: `switch.${this._prefix}_zone_${z.zone}` } });
+        if (i < remainingZones.length - 1) {
+          actions.push({ delay: { minutes: z.duration + 1 } });
+        }
+      }
+      const newId = `irr_${sched.time.replace(":", "")}_${daysKey}_${Date.now()}`;
+      const config = {
+        id: newId,
+        alias: `Irr: ${sched.time} ${sched.days}`,
+        description: `Managed by Inkbird Irrigation Card. Zones: ${JSON.stringify(remainingZones)}`,
+        trigger: [{ platform: "time", at: `${sched.time}:00` }],
+        condition: [{ condition: "time", weekday: selectedDays }],
+        action: actions,
+        mode: "single",
+      };
+      await (this._hass as any).callApi("POST", `config/automation/config/${newId}`, config);
+    } else {
+      // Delete the entire automation
+      await (this._hass as any).callApi("DELETE", `config/automation/config/${configId}`);
     }
+    await this._hass?.callService("automation", "reload", {});
   }
 
   private _duplicateSchedule(schedule: any) {
@@ -219,26 +308,27 @@ export class HaInkbirdIrrigationCard extends LitElement {
   }
 
   private _renderSchedules() {
+    const entries = this._scheduleEntries;
     const schedules = this._schedules;
     return html`
       <div class="schedule-section">
         <div class="schedule-header" @click=${() => { this._schedulesExpanded = !this._schedulesExpanded; }}>
           <span class="schedule-title">
             <ha-icon icon="mdi:chevron-${this._schedulesExpanded ? 'down' : 'right'}"></ha-icon>
-            Schedules ${schedules.length > 0 ? html`<span class="sched-count">${schedules.length}</span>` : nothing}
+            Schedules ${entries.length > 0 ? html`<span class="sched-count">${entries.length}</span>` : nothing}
           </span>
           ${this._schedulesExpanded ? html`<button class="add-btn" @click=${(e: Event) => { e.stopPropagation(); this._addingSchedule = !this._addingSchedule; this._editingScheduleId = null; }}>${this._addingSchedule ? "Cancel" : "+ Add"}</button>` : nothing}
         </div>
         ${this._schedulesExpanded ? html`
           ${this._addingSchedule ? this._renderAddForm() : nothing}
-          ${schedules.length === 0 && !this._addingSchedule ? html`<div class="empty-schedule">No schedules. Tap + Add to create one.</div>` : nothing}
-          ${schedules.map(s => html`
+          ${entries.length === 0 && !this._addingSchedule ? html`<div class="empty-schedule">No schedules. Tap + Add to create one.</div>` : nothing}
+          ${entries.map(s => html`
             <div class="sched-entry">
               <button class="sched-toggle ${s.enabled ? 'on' : ''}" @click=${() => this._toggleSchedule(s.entity_id)}><ha-icon icon="mdi:${s.enabled ? 'check-circle' : 'circle-outline'}"></ha-icon></button>
               <div class="sched-info"><span class="sched-zone" style="color: ${this._zoneColor(s.zone)}">${this._zoneName(s.zone)}</span><span class="sched-detail">${s.time} · ${s.duration}min · ${s.days}</span></div>
               <button class="sched-action" @click=${() => this._editSchedule(s)}><ha-icon icon="mdi:pencil"></ha-icon></button>
               <button class="sched-action" @click=${() => this._duplicateSchedule(s)}><ha-icon icon="mdi:content-copy"></ha-icon></button>
-              <button class="sched-remove" @click=${() => this._removeSchedule(s.entity_id)}><ha-icon icon="mdi:delete"></ha-icon></button>
+              <button class="sched-remove" @click=${() => this._removeSchedule(s.entity_id, s.zone)}><ha-icon icon="mdi:delete"></ha-icon></button>
             </div>
           `)}
         ` : nothing}
