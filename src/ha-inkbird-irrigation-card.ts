@@ -51,6 +51,8 @@ export class HaInkbirdIrrigationCard extends LitElement {
   private _zoneRemaining(zone: number): number { const e = this._hass?.states[`sensor.${this._prefix}_zone_${zone}_time_remaining`]; return e ? parseInt(e.state) || 0 : 0; }
   private _zoneElapsed(zone: number): number { const e = this._hass?.states[`sensor.${this._prefix}_zone_${zone}_time_elapsed`]; return e ? parseInt(e.state) || 0 : 0; }
   private _zoneDuration(zone: number): number { const e = this._hass?.states[`number.${this._prefix}_zone_${zone}_duration`]; return e ? parseInt(e.state) || 30 : 30; }
+  private get _seasonalAdjustment(): number { const e = this._hass?.states[`number.${this._prefix}_seasonal_adjust`]; return e ? parseInt(e.state) || 0 : 100; }
+  private _adjustedDuration(duration: number): number { return Math.max(0, Math.round(duration * this._seasonalAdjustment / 100)); }
   private get _power(): boolean { return this._hass?.states[`switch.${this._prefix}_power`]?.state === "on"; }
   private get _mainValve(): boolean { return this._hass?.states[`switch.${this._prefix}_main_valve`]?.state === "on"; }
   private get _rainSensor(): boolean { return this._hass?.states[`switch.${this._prefix}_rain_sensor`]?.state === "on"; }
@@ -127,6 +129,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
     finally { this._loading = new Set([...this._loading].filter(k => k !== key)); }
   }
   private async _setDuration(zone: number, value: number) { await this._hass?.callService("number", "set_value", { entity_id: `number.${this._prefix}_zone_${zone}_duration`, value }); }
+  private async _setSeasonalAdjustment(value: number) { await this._hass?.callService("number", "set_value", { entity_id: `number.${this._prefix}_seasonal_adjust`, value: Math.max(0, Math.min(100, value)) }); }
   private async _toggleSchedule(entityId: string) { const isOn = this._hass?.states[entityId]?.state === "on"; await this._hass?.callService("automation", isOn ? "turn_off" : "turn_on", { entity_id: entityId }); }
 
   private _scheduleGuardConditions() {
@@ -144,8 +147,8 @@ export class HaInkbirdIrrigationCard extends LitElement {
       actions.push({ service: "number.set_value", target: { entity_id: `number.${this._prefix}_zone_${z.zone}_duration` }, data: { value: z.duration } });
       actions.push({ service: "switch.turn_on", target: { entity_id: `switch.${this._prefix}_zone_${z.zone}` } });
       if (i < zones.length - 1) {
-        // Wait for this zone to finish + 1 min buffer before starting next
-        actions.push({ delay: { minutes: z.duration + 1 } });
+        // Wait for adjusted zone duration + 1 min buffer before starting next.
+        actions.push({ delay: { minutes: `{{ (((${z.duration} * (states('number.${this._prefix}_seasonal_adjust') | int(100))) / 100) | round(0) | int) + 1 }}` } });
       }
     }
     return actions;
@@ -283,6 +286,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
         </div>
         <div class="card-content">
           ${this._renderSwitches()}
+          ${this._renderSeasonalAdjustment()}
           <div class="zones-grid" style="--zones-columns: ${this._config.zones_columns || 1}">
             ${this._zones.map(z => this._renderZone(z))}
           </div>
@@ -300,9 +304,21 @@ export class HaInkbirdIrrigationCard extends LitElement {
     </div>`;
   }
 
+  private _renderSeasonalAdjustment() {
+    const adjustment = this._seasonalAdjustment;
+    return html`<div class="seasonal-row">
+      <div class="seasonal-label"><ha-icon icon="mdi:leaf"></ha-icon><span>Seasonal</span></div>
+      <input class="seasonal-slider" type="range" min="0" max="100" step="1" .value=${String(adjustment)} @change=${(e: Event) => this._setSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value))} />
+      <input class="seasonal-input" type="number" min="0" max="100" step="1" .value=${String(adjustment)} @change=${(e: Event) => this._setSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value) || 0)} />
+      <span class="seasonal-unit">%</span>
+    </div>`;
+  }
+
   private _renderZone(zone: number) {
     const isActive = this._zoneIsActive(zone); const remaining = this._zoneRemaining(zone);
     const elapsed = this._zoneElapsed(zone); const duration = this._zoneDuration(zone);
+    const adjustment = this._seasonalAdjustment;
+    const adjustedDuration = this._adjustedDuration(duration);
     const progress = isActive && (elapsed + remaining) > 0 ? (elapsed / (elapsed + remaining)) * 100 : 0;
     const color = this._zoneColor(zone);
     return html`
@@ -311,7 +327,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
           <div class="zone-indicator ${isActive ? 'pulse' : ''}"></div>
           <div class="zone-info"><span class="zone-name">${this._zoneName(zone)}</span>${isActive ? html`<span class="zone-status">${remaining} min remaining</span>` : nothing}</div>
           ${isActive ? html`<button class="zone-btn zone-btn--active" @click=${() => this._toggleZone(zone)}>${this._loading.has(`zone_${zone}`) ? html`<ha-icon icon="mdi:loading" class="spin"></ha-icon>` : html`<ha-icon icon="mdi:stop"></ha-icon>`}</button>`
-          : html`<div class="zone-controls"><select class="dur-select" @change=${(e: Event) => this._setDuration(zone, parseInt((e.target as HTMLSelectElement).value))}>${[5,10,15,20,30,45,60,90,120].map(d => html`<option value="${d}" ?selected=${duration === d}>${d} min</option>`)}</select><button class="zone-start-btn" @click=${() => this._startZone(zone, duration)} ?disabled=${this._loading.has(`zone_${zone}`)}>${this._loading.has(`zone_${zone}`) ? html`<ha-icon icon="mdi:loading" class="spin"></ha-icon>` : html`<ha-icon icon="mdi:water"></ha-icon>`}</button></div>`}
+          : html`<div class="zone-controls"><div class="duration-stack"><select class="dur-select" @change=${(e: Event) => this._setDuration(zone, parseInt((e.target as HTMLSelectElement).value))}>${[5,10,15,20,30,45,60,90,120].map(d => html`<option value="${d}" ?selected=${duration === d}>${d} min</option>`)}</select>${adjustment === 100 ? nothing : html`<span class="adjusted-duration">${adjustedDuration} min</span>`}</div><button class="zone-start-btn" @click=${() => this._startZone(zone, duration)} ?disabled=${this._loading.has(`zone_${zone}`)}>${this._loading.has(`zone_${zone}`) ? html`<ha-icon icon="mdi:loading" class="spin"></ha-icon>` : html`<ha-icon icon="mdi:water"></ha-icon>`}</button></div>`}
         </div>
         ${isActive ? html`<div class="zone-progress"><div class="zone-progress-fill" style="width: ${progress}%"></div></div>` : nothing}
       </div>`;
@@ -335,7 +351,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
           ${entries.map(s => html`
             <div class="sched-entry">
               <button class="sched-toggle ${s.enabled ? 'on' : ''}" @click=${() => this._toggleSchedule(s.entity_id)}><ha-icon icon="mdi:${s.enabled ? 'check-circle' : 'circle-outline'}"></ha-icon></button>
-              <div class="sched-info"><span class="sched-zone" style="color: ${this._zoneColor(s.zone)}">${this._zoneName(s.zone)}</span><span class="sched-detail">${s.time} · ${s.duration}min · ${s.days}</span></div>
+              <div class="sched-info"><span class="sched-zone" style="color: ${this._zoneColor(s.zone)}">${this._zoneName(s.zone)}</span><span class="sched-detail">${s.time} · ${this._seasonalAdjustment === 100 ? `${s.duration}min` : `${this._adjustedDuration(s.duration)}min (${s.duration})`} · ${s.days}</span></div>
               <button class="sched-action" @click=${() => this._editSchedule(s)}><ha-icon icon="mdi:pencil"></ha-icon></button>
               <button class="sched-action" @click=${() => this._duplicateSchedule(s)}><ha-icon icon="mdi:content-copy"></ha-icon></button>
               <button class="sched-remove" @click=${() => this._removeSchedule(s.entity_id, s.zone)}><ha-icon icon="mdi:delete"></ha-icon></button>
@@ -379,6 +395,11 @@ export class HaInkbirdIrrigationCard extends LitElement {
     .sw-btn--off { background: rgba(244, 67, 54, 0.08); border-color: var(--error-color, #f44336); color: var(--error-color, #f44336); }
     .sw-btn--warn { background: rgba(255, 152, 0, 0.1); border-color: var(--warning-color, #FF9800); color: var(--warning-color, #FF9800); cursor: default; }
     .sw-btn--loading { opacity: 0.6; pointer-events: none; }
+    .seasonal-row { display: grid; grid-template-columns: auto 1fr 56px auto; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; background: var(--primary-background-color, #f5f5f5); margin-bottom: 8px; }
+    .seasonal-label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--primary-text-color); --mdc-icon-size: 16px; }
+    .seasonal-slider { width: 100%; min-width: 0; accent-color: var(--primary-color, #4CAF50); }
+    .seasonal-input { width: 56px; box-sizing: border-box; padding: 5px 4px; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 6px; background: var(--card-background-color, white); color: var(--primary-text-color); font-size: 12px; text-align: right; }
+    .seasonal-unit { font-size: 12px; font-weight: 600; color: var(--secondary-text-color); }
     .spin { animation: spin 1s linear infinite; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     .zone { border-radius: 12px; background: var(--primary-background-color, #f5f5f5); overflow: hidden; transition: all 200ms; }
@@ -395,6 +416,8 @@ export class HaInkbirdIrrigationCard extends LitElement {
     .zone-name { font-size: 14px; font-weight: 500; }
     .zone-status { font-size: 12px; color: var(--zone-color); font-weight: 500; }
     .zone-controls { display: flex; align-items: center; gap: 6px; }
+    .duration-stack { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+    .adjusted-duration { font-size: 10px; color: var(--secondary-text-color); white-space: nowrap; }
     .dur-select { padding: 6px 8px; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 8px; font-size: 13px; background: var(--card-background-color, white); color: var(--primary-text-color); cursor: pointer; }
     .zone-start-btn { width: 36px; height: 36px; border: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; background: var(--zone-color); color: white; --mdc-icon-size: 18px; transition: opacity 200ms; }
     .zone-start-btn:active { opacity: 0.7; }
