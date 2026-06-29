@@ -43,7 +43,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
   setConfig(config: CardConfig) { this._config = config; }
   set hass(hass: HomeAssistant) {
     this._hass = hass;
-    const seasonalEntity = hass.states[`number.${this._prefix}_seasonal_adjust`];
+    const seasonalEntity = hass.states[this._seasonalAdjustmentEntityId];
     if (this._seasonalAdjustmentDraft !== null && seasonalEntity && parseInt(seasonalEntity.state) === this._seasonalAdjustmentDraft) {
       this._seasonalAdjustmentDraft = null;
     }
@@ -59,7 +59,14 @@ export class HaInkbirdIrrigationCard extends LitElement {
   private _zoneRemaining(zone: number): number { const e = this._hass?.states[`sensor.${this._prefix}_zone_${zone}_time_remaining`]; return e ? parseInt(e.state) || 0 : 0; }
   private _zoneElapsed(zone: number): number { const e = this._hass?.states[`sensor.${this._prefix}_zone_${zone}_time_elapsed`]; return e ? parseInt(e.state) || 0 : 0; }
   private _zoneDuration(zone: number): number { const e = this._hass?.states[`number.${this._prefix}_zone_${zone}_duration`]; return e ? parseInt(e.state) || 30 : 30; }
-  private get _seasonalAdjustment(): number { const e = this._hass?.states[`number.${this._prefix}_seasonal_adjust`]; return this._seasonalAdjustmentDraft ?? (e ? parseInt(e.state) || 0 : 100); }
+  private get _seasonalAdjustmentEntityId(): string {
+    const preferred = `number.${this._prefix}_seasonal_adjust`;
+    const named = `number.${this._prefix}_seasonal_adjustment`;
+    if (this._hass?.states[preferred]) return preferred;
+    if (this._hass?.states[named]) return named;
+    return preferred;
+  }
+  private get _seasonalAdjustment(): number { const e = this._hass?.states[this._seasonalAdjustmentEntityId]; return this._seasonalAdjustmentDraft ?? (e ? parseInt(e.state) || 0 : 100); }
   private _normalizeSeasonalAdjustment(value: number): number { return Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0)); }
   private _adjustedDuration(duration: number): number { return Math.max(0, Math.round(duration * this._seasonalAdjustment / 100)); }
   private get _power(): boolean { return this._hass?.states[`switch.${this._prefix}_power`]?.state === "on"; }
@@ -142,7 +149,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
   private async _setSeasonalAdjustment(value: number) {
     const adjustment = this._normalizeSeasonalAdjustment(value);
     this._seasonalAdjustmentDraft = adjustment;
-    try { await this._hass?.callService("number", "set_value", { entity_id: `number.${this._prefix}_seasonal_adjust`, value: adjustment }); }
+    try { await this._hass?.callService("number", "set_value", { entity_id: this._seasonalAdjustmentEntityId, value: adjustment }); }
     catch (e) { this._seasonalAdjustmentDraft = null; this.requestUpdate(); throw e; }
   }
   private async _toggleSchedule(entityId: string) { const isOn = this._hass?.states[entityId]?.state === "on"; await this._hass?.callService("automation", isOn ? "turn_off" : "turn_on", { entity_id: entityId }); }
@@ -163,7 +170,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
       actions.push({ service: "switch.turn_on", target: { entity_id: `switch.${this._prefix}_zone_${z.zone}` } });
       if (i < zones.length - 1) {
         // Wait for adjusted zone duration + 1 min buffer before starting next.
-        actions.push({ delay: { minutes: `{{ (((${z.duration} * (states('number.${this._prefix}_seasonal_adjust') | int(100))) / 100) | round(0) | int) + 1 }}` } });
+        actions.push({ delay: { minutes: `{{ (((${z.duration} * (states('${this._seasonalAdjustmentEntityId}') | int(100))) / 100) | round(0) | int) + 1 }}` } });
       }
     }
     return actions;
