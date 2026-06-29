@@ -35,12 +35,20 @@ export class HaInkbirdIrrigationCard extends LitElement {
   @state() private _newDuration = 30;
   @state() private _newDays: boolean[] = [true, false, true, false, true, false, false];
   @state() private _saving = false;
+  @state() private _seasonalAdjustmentDraft: number | null = null;
   private _hass?: HomeAssistant;
 
   static getConfigElement() { return document.createElement("ha-inkbird-irrigation-card-editor"); }
   static getStubConfig() { return { type: "custom:ha-inkbird-irrigation-card", entity_prefix: "inkbird_iic_600" }; }
   setConfig(config: CardConfig) { this._config = config; }
-  set hass(hass: HomeAssistant) { this._hass = hass; this.requestUpdate(); }
+  set hass(hass: HomeAssistant) {
+    this._hass = hass;
+    const seasonalEntity = hass.states[`number.${this._prefix}_seasonal_adjust`];
+    if (this._seasonalAdjustmentDraft !== null && seasonalEntity && parseInt(seasonalEntity.state) === this._seasonalAdjustmentDraft) {
+      this._seasonalAdjustmentDraft = null;
+    }
+    this.requestUpdate();
+  }
   getCardSize() { return 6; }
 
   private get _prefix(): string { return this._config.entity_prefix || "inkbird_iic_600"; }
@@ -51,7 +59,8 @@ export class HaInkbirdIrrigationCard extends LitElement {
   private _zoneRemaining(zone: number): number { const e = this._hass?.states[`sensor.${this._prefix}_zone_${zone}_time_remaining`]; return e ? parseInt(e.state) || 0 : 0; }
   private _zoneElapsed(zone: number): number { const e = this._hass?.states[`sensor.${this._prefix}_zone_${zone}_time_elapsed`]; return e ? parseInt(e.state) || 0 : 0; }
   private _zoneDuration(zone: number): number { const e = this._hass?.states[`number.${this._prefix}_zone_${zone}_duration`]; return e ? parseInt(e.state) || 30 : 30; }
-  private get _seasonalAdjustment(): number { const e = this._hass?.states[`number.${this._prefix}_seasonal_adjust`]; return e ? parseInt(e.state) || 0 : 100; }
+  private get _seasonalAdjustment(): number { const e = this._hass?.states[`number.${this._prefix}_seasonal_adjust`]; return this._seasonalAdjustmentDraft ?? (e ? parseInt(e.state) || 0 : 100); }
+  private _normalizeSeasonalAdjustment(value: number): number { return Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0)); }
   private _adjustedDuration(duration: number): number { return Math.max(0, Math.round(duration * this._seasonalAdjustment / 100)); }
   private get _power(): boolean { return this._hass?.states[`switch.${this._prefix}_power`]?.state === "on"; }
   private get _mainValve(): boolean { return this._hass?.states[`switch.${this._prefix}_main_valve`]?.state === "on"; }
@@ -129,7 +138,13 @@ export class HaInkbirdIrrigationCard extends LitElement {
     finally { this._loading = new Set([...this._loading].filter(k => k !== key)); }
   }
   private async _setDuration(zone: number, value: number) { await this._hass?.callService("number", "set_value", { entity_id: `number.${this._prefix}_zone_${zone}_duration`, value }); }
-  private async _setSeasonalAdjustment(value: number) { await this._hass?.callService("number", "set_value", { entity_id: `number.${this._prefix}_seasonal_adjust`, value: Math.max(0, Math.min(100, value)) }); }
+  private _previewSeasonalAdjustment(value: number) { this._seasonalAdjustmentDraft = this._normalizeSeasonalAdjustment(value); }
+  private async _setSeasonalAdjustment(value: number) {
+    const adjustment = this._normalizeSeasonalAdjustment(value);
+    this._seasonalAdjustmentDraft = adjustment;
+    try { await this._hass?.callService("number", "set_value", { entity_id: `number.${this._prefix}_seasonal_adjust`, value: adjustment }); }
+    catch (e) { this._seasonalAdjustmentDraft = null; this.requestUpdate(); throw e; }
+  }
   private async _toggleSchedule(entityId: string) { const isOn = this._hass?.states[entityId]?.state === "on"; await this._hass?.callService("automation", isOn ? "turn_off" : "turn_on", { entity_id: entityId }); }
 
   private _scheduleGuardConditions() {
@@ -308,8 +323,8 @@ export class HaInkbirdIrrigationCard extends LitElement {
     const adjustment = this._seasonalAdjustment;
     return html`<div class="seasonal-row">
       <div class="seasonal-label"><ha-icon icon="mdi:leaf"></ha-icon><span>Seasonal</span></div>
-      <input class="seasonal-slider" type="range" min="0" max="100" step="1" .value=${String(adjustment)} @change=${(e: Event) => this._setSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value))} />
-      <input class="seasonal-input" type="number" min="0" max="100" step="1" .value=${String(adjustment)} @change=${(e: Event) => this._setSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value) || 0)} />
+      <input class="seasonal-slider" type="range" min="0" max="100" step="1" .value=${String(adjustment)} @input=${(e: Event) => this._previewSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value))} @change=${(e: Event) => this._setSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value))} />
+      <input class="seasonal-input" type="number" min="0" max="100" step="1" .value=${String(adjustment)} @input=${(e: Event) => this._previewSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value))} @change=${(e: Event) => this._setSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value))} />
       <span class="seasonal-unit">%</span>
     </div>`;
   }
