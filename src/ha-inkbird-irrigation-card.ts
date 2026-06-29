@@ -51,6 +51,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
   private _zoneRemaining(zone: number): number { const e = this._hass?.states[`sensor.${this._prefix}_zone_${zone}_time_remaining`]; return e ? parseInt(e.state) || 0 : 0; }
   private _zoneElapsed(zone: number): number { const e = this._hass?.states[`sensor.${this._prefix}_zone_${zone}_time_elapsed`]; return e ? parseInt(e.state) || 0 : 0; }
   private _zoneDuration(zone: number): number { const e = this._hass?.states[`number.${this._prefix}_zone_${zone}_duration`]; return e ? parseInt(e.state) || 30 : 30; }
+  private get _power(): boolean { return this._hass?.states[`switch.${this._prefix}_power`]?.state === "on"; }
   private get _mainValve(): boolean { return this._hass?.states[`switch.${this._prefix}_main_valve`]?.state === "on"; }
   private get _rainSensor(): boolean { return this._hass?.states[`switch.${this._prefix}_rain_sensor`]?.state === "on"; }
   private get _skipSchedule(): boolean { return this._hass?.states[`switch.${this._prefix}_skip_schedule`]?.state === "on"; }
@@ -122,11 +123,33 @@ export class HaInkbirdIrrigationCard extends LitElement {
   }
   private async _toggleSwitch(entityId: string) {
     const key = `sw_${entityId}`; this._loading = new Set([...this._loading, key]);
-    try { await this._hass?.callService("switch", this._hass?.states[entityId]?.state === "on" ? "turn_off" : "turn_on", { entity_id: entityId }); await new Promise(r => setTimeout(r, 1000)); await this._hass?.callService("homeassistant", "update_entity", { entity_id: entityId }); await this._hass?.callService("homeassistant", "update_entity", { entity_id: `switch.${this._prefix}_main_valve` }); await this._hass?.callService("homeassistant", "update_entity", { entity_id: `switch.${this._prefix}_rain_sensor` }); await new Promise(r => setTimeout(r, 500)); }
+    try { await this._hass?.callService("switch", this._hass?.states[entityId]?.state === "on" ? "turn_off" : "turn_on", { entity_id: entityId }); await new Promise(r => setTimeout(r, 1000)); await this._hass?.callService("homeassistant", "update_entity", { entity_id: entityId }); await this._hass?.callService("homeassistant", "update_entity", { entity_id: `switch.${this._prefix}_power` }); await this._hass?.callService("homeassistant", "update_entity", { entity_id: `switch.${this._prefix}_main_valve` }); await this._hass?.callService("homeassistant", "update_entity", { entity_id: `switch.${this._prefix}_rain_sensor` }); await this._hass?.callService("homeassistant", "update_entity", { entity_id: `switch.${this._prefix}_skip_schedule` }); await new Promise(r => setTimeout(r, 500)); }
     finally { this._loading = new Set([...this._loading].filter(k => k !== key)); }
   }
   private async _setDuration(zone: number, value: number) { await this._hass?.callService("number", "set_value", { entity_id: `number.${this._prefix}_zone_${zone}_duration`, value }); }
   private async _toggleSchedule(entityId: string) { const isOn = this._hass?.states[entityId]?.state === "on"; await this._hass?.callService("automation", isOn ? "turn_off" : "turn_on", { entity_id: entityId }); }
+
+  private _scheduleGuardConditions() {
+    return [
+      { condition: "state", entity_id: `switch.${this._prefix}_power`, state: "on" },
+      { condition: "state", entity_id: `switch.${this._prefix}_skip_schedule`, state: "off" },
+    ];
+  }
+
+  private _buildScheduleActions(zones: {zone: number; duration: number}[]) {
+    const actions: any[] = [];
+    for (let i = 0; i < zones.length; i++) {
+      const z = zones[i];
+      actions.push(...this._scheduleGuardConditions());
+      actions.push({ service: "number.set_value", target: { entity_id: `number.${this._prefix}_zone_${z.zone}_duration` }, data: { value: z.duration } });
+      actions.push({ service: "switch.turn_on", target: { entity_id: `switch.${this._prefix}_zone_${z.zone}` } });
+      if (i < zones.length - 1) {
+        // Wait for this zone to finish + 1 min buffer before starting next
+        actions.push({ delay: { minutes: z.duration + 1 } });
+      }
+    }
+    return actions;
+  }
 
   private async _addSchedule() {
     const selectedDays = DAY_IDS.filter((_, i) => this._newDays[i]);
@@ -168,16 +191,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
       }
 
       // Build sequential action list
-      const actions: any[] = [];
-      for (let i = 0; i < zones.length; i++) {
-        const z = zones[i];
-        actions.push({ service: "number.set_value", target: { entity_id: `number.${this._prefix}_zone_${z.zone}_duration` }, data: { value: z.duration } });
-        actions.push({ service: "switch.turn_on", target: { entity_id: `switch.${this._prefix}_zone_${z.zone}` } });
-        if (i < zones.length - 1) {
-          // Wait for this zone to finish + 1 min buffer before starting next
-          actions.push({ delay: { minutes: z.duration + 1 } });
-        }
-      }
+      const actions = this._buildScheduleActions(zones);
 
       const id = `irr_${this._newTime.replace(":", "")}_${daysKey}_${Date.now()}`;
       const zonesLabel = zones.map(z => `Z${z.zone}:${z.duration}`).join(",");
@@ -188,7 +202,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
         alias,
         description: `Managed by Inkbird Irrigation Card. Zones: ${zonesJson}`,
         trigger: [{ platform: "time", at: `${this._newTime}:00` }],
-        condition: [{ condition: "time", weekday: selectedDays }],
+        condition: [{ condition: "time", weekday: selectedDays }, ...this._scheduleGuardConditions()],
         action: actions,
         mode: "single",
       };
@@ -215,22 +229,14 @@ export class HaInkbirdIrrigationCard extends LitElement {
       // Rebuild with remaining zones
       const selectedDays = DAY_IDS.filter((_, i) => sched.days.includes(DAY_NAMES[i]));
       const daysKey = selectedDays.sort().join("_");
-      const actions: any[] = [];
-      for (let i = 0; i < remainingZones.length; i++) {
-        const z = remainingZones[i];
-        actions.push({ service: "number.set_value", target: { entity_id: `number.${this._prefix}_zone_${z.zone}_duration` }, data: { value: z.duration } });
-        actions.push({ service: "switch.turn_on", target: { entity_id: `switch.${this._prefix}_zone_${z.zone}` } });
-        if (i < remainingZones.length - 1) {
-          actions.push({ delay: { minutes: z.duration + 1 } });
-        }
-      }
+      const actions = this._buildScheduleActions(remainingZones);
       const newId = `irr_${sched.time.replace(":", "")}_${daysKey}_${Date.now()}`;
       const config = {
         id: newId,
         alias: `Irr: ${sched.time} ${sched.days} [${remainingZones.map(z => `Z${z.zone}:${z.duration}`).join(",")}]`,
         description: `Managed by Inkbird Irrigation Card.`,
         trigger: [{ platform: "time", at: `${sched.time}:00` }],
-        condition: [{ condition: "time", weekday: selectedDays }],
+        condition: [{ condition: "time", weekday: selectedDays }, ...this._scheduleGuardConditions()],
         action: actions,
         mode: "single",
       };
@@ -287,9 +293,10 @@ export class HaInkbirdIrrigationCard extends LitElement {
 
   private _renderSwitches() {
     return html`<div class="switches-row">
+      <button class="sw-btn ${this._power ? 'sw-btn--on' : 'sw-btn--off'} ${this._loading.has(`sw_switch.${this._prefix}_power`) ? 'sw-btn--loading' : ''}" @click=${() => this._toggleSwitch(`switch.${this._prefix}_power`)}>${this._loading.has(`sw_switch.${this._prefix}_power`) ? html`<ha-icon icon="mdi:loading" class="spin"></ha-icon>` : html`<ha-icon icon="mdi:power"></ha-icon>`}<span>Power</span></button>
       <button class="sw-btn ${this._mainValve ? 'sw-btn--on' : ''} ${this._loading.has(`sw_switch.${this._prefix}_main_valve`) ? 'sw-btn--loading' : ''}" @click=${() => this._toggleSwitch(`switch.${this._prefix}_main_valve`)}>${this._loading.has(`sw_switch.${this._prefix}_main_valve`) ? html`<ha-icon icon="mdi:loading" class="spin"></ha-icon>` : html`<ha-icon icon="mdi:valve"></ha-icon>`}<span>Valve</span></button>
       <button class="sw-btn ${this._rainSensor ? 'sw-btn--on' : ''} ${this._loading.has(`sw_switch.${this._prefix}_rain_sensor`) ? 'sw-btn--loading' : ''}" @click=${() => this._toggleSwitch(`switch.${this._prefix}_rain_sensor`)}>${this._loading.has(`sw_switch.${this._prefix}_rain_sensor`) ? html`<ha-icon icon="mdi:loading" class="spin"></ha-icon>` : html`<ha-icon icon="mdi:weather-rainy"></ha-icon>`}<span>Rain</span></button>
-      ${this._skipSchedule ? html`<div class="sw-btn sw-btn--warn"><ha-icon icon="mdi:calendar-remove"></ha-icon><span>Skipped</span></div>` : nothing}
+      <button class="sw-btn ${this._skipSchedule ? 'sw-btn--warn' : ''} ${this._loading.has(`sw_switch.${this._prefix}_skip_schedule`) ? 'sw-btn--loading' : ''}" @click=${() => this._toggleSwitch(`switch.${this._prefix}_skip_schedule`)}>${this._loading.has(`sw_switch.${this._prefix}_skip_schedule`) ? html`<ha-icon icon="mdi:loading" class="spin"></ha-icon>` : html`<ha-icon icon="mdi:calendar-remove"></ha-icon>`}<span>Skip</span></button>
     </div>`;
   }
 
@@ -369,6 +376,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
     .switches-row { display: flex; gap: 6px; margin-bottom: 8px; }
     .sw-btn { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 8px; border: 1px solid var(--divider-color, #e0e0e0); border-radius: 10px; background: transparent; cursor: pointer; color: var(--secondary-text-color); font-size: 11px; font-weight: 500; --mdc-icon-size: 20px; transition: all 200ms; }
     .sw-btn--on { background: rgba(76, 175, 80, 0.1); border-color: var(--primary-color, #4CAF50); color: var(--primary-color, #4CAF50); }
+    .sw-btn--off { background: rgba(244, 67, 54, 0.08); border-color: var(--error-color, #f44336); color: var(--error-color, #f44336); }
     .sw-btn--warn { background: rgba(255, 152, 0, 0.1); border-color: var(--warning-color, #FF9800); color: var(--warning-color, #FF9800); cursor: default; }
     .sw-btn--loading { opacity: 0.6; pointer-events: none; }
     .spin { animation: spin 1s linear infinite; }
