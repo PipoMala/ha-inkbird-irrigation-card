@@ -22,6 +22,9 @@ interface CardConfig { type: string; entity_prefix?: string; title?: string; zon
 const ZONE_COLORS = ["#4CAF50", "#2196F3", "#FF9800", "#9C27B0", "#00BCD4", "#F44336"];
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const DAY_IDS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+// Marker prefixed to a JSON blob stored in each managed automation's description.
+// This is the authoritative source for schedule data (robust to renames).
+const SCHED_MARKER = "IIC-SCHEDULE:";
 
 @customElement("ha-inkbird-irrigation-card")
 export class HaInkbirdIrrigationCard extends LitElement {
@@ -36,6 +39,10 @@ export class HaInkbirdIrrigationCard extends LitElement {
   @state() private _newDays: boolean[] = [true, false, true, false, true, false, false];
   @state() private _saving = false;
   @state() private _seasonalAdjustmentDraft: number | null = null;
+  @state() private _scheduleConfigs: Record<string, any> = {};
+  private _fetchingConfigs: Set<string> = new Set();
+  private _schedCache: { id: string; entity_id: string; name: string; enabled: boolean; time: string; days: string; zones: {zone: number; duration: number}[] }[] | null = null;
+  private _schedCacheKey: { hass?: HomeAssistant; configs?: Record<string, any> } = {};
   private _hass?: HomeAssistant;
 
   static getConfigElement() { return document.createElement("ha-inkbird-irrigation-card-editor"); }
@@ -47,6 +54,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
     if (this._seasonalAdjustmentDraft !== null && seasonalEntity && parseInt(seasonalEntity.state) === this._seasonalAdjustmentDraft) {
       this._seasonalAdjustmentDraft = null;
     }
+    this._syncScheduleConfigs();
     this.requestUpdate();
   }
   getCardSize() { return 6; }
@@ -60,14 +68,17 @@ export class HaInkbirdIrrigationCard extends LitElement {
   private _zoneElapsed(zone: number): number { const e = this._hass?.states[`sensor.${this._prefix}_zone_${zone}_time_elapsed`]; return e ? parseInt(e.state) || 0 : 0; }
   private _zoneDuration(zone: number): number { const e = this._hass?.states[`number.${this._prefix}_zone_${zone}_duration`]; return e ? parseInt(e.state) || 30 : 30; }
   private get _seasonalAdjustmentEntityId(): string {
-    const preferred = `number.${this._prefix}_seasonal_adjust`;
+    // The entity_id is "..._seasonal_adjustment" (derived from the name
+    // "Seasonal adjustment"). "..._seasonal_adjust" is only the unique_id and is
+    // kept as a legacy fallback for older installs.
     const named = `number.${this._prefix}_seasonal_adjustment`;
-    if (this._hass?.states[preferred]) return preferred;
+    const legacy = `number.${this._prefix}_seasonal_adjust`;
     if (this._hass?.states[named]) return named;
-    return preferred;
+    if (this._hass?.states[legacy]) return legacy;
+    return named;
   }
   private get _seasonalAdjustment(): number { const e = this._hass?.states[this._seasonalAdjustmentEntityId]; return this._seasonalAdjustmentDraft ?? (e ? parseInt(e.state) || 0 : 100); }
-  private _normalizeSeasonalAdjustment(value: number): number { return Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0)); }
+  private _normalizeSeasonalAdjustment(value: number): number { return Math.max(0, Math.min(200, Number.isFinite(value) ? value : 0)); }
   private _adjustedDuration(duration: number): number { return Math.max(0, Math.round(duration * this._seasonalAdjustment / 100)); }
   private get _power(): boolean { return this._hass?.states[`switch.${this._prefix}_power`]?.state === "on"; }
   private get _mainValve(): boolean { return this._hass?.states[`switch.${this._prefix}_main_valve`]?.state === "on"; }
@@ -78,14 +89,89 @@ export class HaInkbirdIrrigationCard extends LitElement {
   private get _activeZones(): number[] { return this._zones.filter(z => this._zoneIsActive(z)); }
 
   // ── Schedules: find automations created by this card ──
-  // Each automation handles one time+days slot with multiple zones sequenced
+  // Each automation handles one time+days slot with multiple zones sequenced.
+  // The authoritative data lives in the automation's description (SCHED_MARKER
+  // JSON); the friendly-name parsing below is only a fallback for legacy
+  // automations or while the config is still loading.
+  private async _syncScheduleConfigs() {
+    if (!this._hass) return;
+    const current = new Set<string>();
+    for (const [eid, entity] of Object.entries(this._hass.states)) {
+      if (!eid.startsWith("automation.irr_")) continue;
+      const id = entity.attributes?.id;
+      if (id) current.add(id);
+    }
+    // Prune cache entries for automations that no longer exist.
+    let pruned = false;
+    const cleaned: Record<string, any> = {};
+    for (const [id, cfg] of Object.entries(this._scheduleConfigs)) {
+      if (current.has(id)) cleaned[id] = cfg; else pruned = true;
+    }
+    if (pruned) { this._scheduleConfigs = cleaned; this.requestUpdate(); }
+    // Fetch configs we don't have yet.
+    for (const id of current) {
+      if (id in this._scheduleConfigs || this._fetchingConfigs.has(id)) continue;
+      this._fetchingConfigs.add(id);
+      try {
+        const cfg = await (this._hass as any).callApi("GET", `config/automation/config/${id}`);
+        this._scheduleConfigs = { ...this._scheduleConfigs, [id]: cfg || null };
+      } catch (e) {
+        this._scheduleConfigs = { ...this._scheduleConfigs, [id]: null };
+      } finally {
+        this._fetchingConfigs.delete(id);
+        this.requestUpdate();
+      }
+    }
+  }
+
+  private _parseScheduleConfig(cfg: any): { time: string; days: string; zones: {zone: number; duration: number}[] } | null {
+    const desc = cfg?.description;
+    if (typeof desc !== "string") return null;
+    const idx = desc.indexOf(SCHED_MARKER);
+    if (idx < 0) return null;
+    try {
+      const data = JSON.parse(desc.slice(idx + SCHED_MARKER.length));
+      if (!data || !Array.isArray(data.zones) || !Array.isArray(data.days)) return null;
+      const days = DAY_IDS.map((d, i) => data.days.includes(d) ? DAY_NAMES[i] : null).filter(Boolean).join(",");
+      const zones = data.zones
+        .map((z: any) => ({ zone: parseInt(z.zone), duration: parseInt(z.duration) }))
+        .filter((z: any) => z.zone > 0);
+      if (zones.length === 0) return null;
+      return { time: String(data.time), days, zones };
+    } catch {
+      return null;
+    }
+  }
+
   private get _schedules(): { id: string; entity_id: string; name: string; enabled: boolean; time: string; days: string; zones: {zone: number; duration: number}[] }[] {
+    // Memoize against the current hass and config-cache references; both are
+    // replaced by reference whenever their content changes, so this recomputes
+    // only when something relevant actually changed (not on every getter call).
+    if (this._schedCache && this._schedCacheKey.hass === this._hass && this._schedCacheKey.configs === this._scheduleConfigs) {
+      return this._schedCache;
+    }
+    const results = this._computeSchedules();
+    this._schedCache = results;
+    this._schedCacheKey = { hass: this._hass, configs: this._scheduleConfigs };
+    return results;
+  }
+
+  private _computeSchedules(): { id: string; entity_id: string; name: string; enabled: boolean; time: string; days: string; zones: {zone: number; duration: number}[] }[] {
     if (!this._hass) return [];
     const results: any[] = [];
     for (const [eid, entity] of Object.entries(this._hass.states)) {
       if (!eid.startsWith("automation.irr_")) continue;
       const name = entity.attributes?.friendly_name || eid;
-      // New format: "Irr: 05:00 Mon,Wed,Fri [Z1:60,Z2:30]"
+      const id = entity.attributes?.id || eid;
+
+      // Preferred: structured data stored in the automation description.
+      const structured = this._parseScheduleConfig(this._scheduleConfigs[id]);
+      if (structured) {
+        results.push({ id, entity_id: eid, name, enabled: entity.state === "on", time: structured.time, days: structured.days, zones: structured.zones });
+        continue;
+      }
+
+      // Fallback — new name format: "Irr: 05:00 Mon,Wed,Fri [Z1:60,Z2:30]"
       const m = name.match(/Irr:\s*(\d{2}:\d{2})\s+([A-Za-z,]+)\s*\[([^\]]+)\]/i);
       if (m) {
         const time = m[1]; const days = m[2].trim();
@@ -95,14 +181,14 @@ export class HaInkbirdIrrigationCard extends LitElement {
           if (zm) zones.push({ zone: parseInt(zm[1]), duration: parseInt(zm[2]) });
         }
         if (zones.length > 0) {
-          results.push({ id: entity.attributes?.id || eid, entity_id: eid, name, enabled: entity.state === "on", time, days, zones });
+          results.push({ id, entity_id: eid, name, enabled: entity.state === "on", time, days, zones });
           continue;
         }
       }
       // Legacy format: "Irr: Zone 5 @ 07:00 (30min) Mon,Wed,Fri"
       const legacy = name.match(/Irr:\s*Zone\s*(\d+)\s*@\s*(\d{2}:\d{2})\s*\((\d+)min\)\s*(.*)/i);
       if (legacy) {
-        results.push({ id: entity.attributes?.id || eid, entity_id: eid, name, enabled: entity.state === "on", time: legacy[2], days: legacy[4].trim(), zones: [{zone: parseInt(legacy[1]), duration: parseInt(legacy[3])}] });
+        results.push({ id, entity_id: eid, name, enabled: entity.state === "on", time: legacy[2], days: legacy[4].trim(), zones: [{zone: parseInt(legacy[1]), duration: parseInt(legacy[3])}] });
       }
     }
     return results.sort((a, b) => a.time.localeCompare(b.time));
@@ -221,11 +307,11 @@ export class HaInkbirdIrrigationCard extends LitElement {
       const id = `irr_${this._newTime.replace(":", "")}_${daysKey}_${Date.now()}`;
       const zonesLabel = zones.map(z => `Z${z.zone}:${z.duration}`).join(",");
       const alias = `Irr: ${this._newTime} ${daysLabel} [${zonesLabel}]`;
-      const zonesJson = JSON.stringify(zones);
+      const schedData = { time: this._newTime, days: selectedDays, zones };
       const config = {
         id,
         alias,
-        description: `Managed by Inkbird Irrigation Card. Zones: ${zonesJson}`,
+        description: `Managed by Inkbird Irrigation Card. ${SCHED_MARKER}${JSON.stringify(schedData)}`,
         trigger: [{ platform: "time", at: `${this._newTime}:00` }],
         condition: [{ condition: "time", weekday: selectedDays }, ...this._scheduleGuardConditions()],
         action: actions,
@@ -259,7 +345,7 @@ export class HaInkbirdIrrigationCard extends LitElement {
       const config = {
         id: newId,
         alias: `Irr: ${sched.time} ${sched.days} [${remainingZones.map(z => `Z${z.zone}:${z.duration}`).join(",")}]`,
-        description: `Managed by Inkbird Irrigation Card.`,
+        description: `Managed by Inkbird Irrigation Card. ${SCHED_MARKER}${JSON.stringify({ time: sched.time, days: selectedDays, zones: remainingZones })}`,
         trigger: [{ platform: "time", at: `${sched.time}:00` }],
         condition: [{ condition: "time", weekday: selectedDays }, ...this._scheduleGuardConditions()],
         action: actions,
@@ -330,8 +416,8 @@ export class HaInkbirdIrrigationCard extends LitElement {
     const adjustment = this._seasonalAdjustment;
     return html`<div class="seasonal-row">
       <div class="seasonal-label"><ha-icon icon="mdi:leaf"></ha-icon><span>Seasonal</span></div>
-      <input class="seasonal-slider" type="range" min="0" max="100" step="1" .value=${String(adjustment)} @input=${(e: Event) => this._previewSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value))} @change=${(e: Event) => this._setSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value))} />
-      <input class="seasonal-input" type="number" min="0" max="100" step="1" .value=${String(adjustment)} @input=${(e: Event) => this._previewSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value))} @change=${(e: Event) => this._setSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value))} />
+      <input class="seasonal-slider" type="range" min="0" max="200" step="1" .value=${String(adjustment)} @input=${(e: Event) => this._previewSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value))} @change=${(e: Event) => this._setSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value))} />
+      <input class="seasonal-input" type="number" min="0" max="200" step="1" .value=${String(adjustment)} @input=${(e: Event) => this._previewSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value))} @change=${(e: Event) => this._setSeasonalAdjustment(parseInt((e.target as HTMLInputElement).value))} />
       <span class="seasonal-unit">%</span>
     </div>`;
   }
